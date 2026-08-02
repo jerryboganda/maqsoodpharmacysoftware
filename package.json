@@ -1,0 +1,21 @@
+{
+  "name": "pharmacy-platform",
+  "private": true,
+  "version": "0.0.1",
+  "description": "WASEELA ABUZAR V3 modernization -- Node.js/TypeScript + React + MySQL rebuild. See docs/system-analysis for the full evidence-based analysis and blueprint this project is built from.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0"
+  }
+}
