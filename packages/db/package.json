@@ -1,0 +1,22 @@
+{
+  "name": "@pharmacy/db",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./schema/index.ts",
+  "types": "./schema/index.ts",
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4",
+    "mysql2": "^3.11.5"
+  },
+  "devDependencies": {
+    "@pharmacy/config": "workspace:*",
+    "@types/node": "^22.10.2",
+    "drizzle-kit": "^0.28.1",
+    "typescript": "^5.7.0"
+  }
+}

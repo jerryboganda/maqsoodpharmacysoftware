@@ -1,0 +1,125 @@
+// Blueprint: docs/system-analysis/09-roles-permissions.md Part I (RECOMMENDED RBAC MODEL FOR THE
+// REBUILD) -- §I.2 proposed schema, §I.3 the eight-role set derived from the four real legacy
+// groups plus separation of duties, §I.5 non-negotiable controls; reconciled with
+// docs/system-analysis/19-mysql-schema-blueprint.md §T14-T19 (role/permission/role_permission/
+// role_scope/role_policy/user_role) and 00b-owner-decisions-and-requirements.md D16/R6
+// (tenant_id) and P1 (role-appropriate options, P1.5).
+import { boolean, datetime, index, mysqlEnum, mysqlTable, primaryKey, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { appUsers } from "./identity";
+import { auditColumns, fkBigInt, fkBigIntNotNull, idPk, softDeleteColumns, TIMESTAMP_FSP } from "./_shared";
+import { tenants } from "./tenant";
+
+/**
+ * A named role. §T14: "Renamed from the legacy `Groups`, which is a reserved word in MySQL 8
+ * (window-function keyword) and holds the role definitions plus 29 embedded business-policy
+ * columns" -- those 29 columns are deliberately NOT reproduced here (P1.4: they are business
+ * policy and belong in `role_policy`/`app_setting`/`option_item` rows, not schema columns; out of
+ * scope for this Foundations package).
+ *
+ * `tenant_id` is nullable: `NULL` rows are the eight platform-seeded role templates from 09 §I.3
+ * (`is_system = 1`), available to every tenant; a tenant admin may additionally define
+ * tenant-specific roles (`tenant_id` set, per R6 "a tenant-level admin ... manages their own ...
+ * options and settings").
+ *
+ * 09 §I.3 recommended role set (seeded from the four real legacy groups + separation of duties):
+ * owner, sys_admin, pharmacy_manager, shift_incharge, sales_officer, purchase_officer,
+ * accountant, auditor.
+ */
+export const roles = mysqlTable(
+  "role",
+  {
+    roleId: idPk("role_id"),
+    tenantId: fkBigInt("tenant_id").references(() => tenants.tenantId),
+    roleKey: varchar("role_key", { length: 64 }).notNull(), // e.g. `owner`, `sales_officer`
+    displayName: varchar("display_name", { length: 120 }).notNull(),
+    description: varchar("description", { length: 255 }),
+    isSystem: boolean("is_system").notNull().default(false), // system roles cannot be deleted (09 §I.2)
+    isAdmin: boolean("is_admin").notNull().default(false),
+    legacyGroupCode: varchar("legacy_group_code", { length: 16 }), // legacy Groups.GroupCode traceability
+    ...auditColumns(),
+    ...softDeleteColumns(),
+  },
+  (table) => ({
+    keyUnique: uniqueIndex("uk_role_tenant_key").on(table.tenantId, table.roleKey),
+    tenantIdx: index("ix_role_tenant").on(table.tenantId, table.isSystem),
+  }),
+);
+
+/**
+ * The permission atom. §T15: legacy `Rights` holds 486 rows whose `LevelIndex`/`IndicesString`
+ * encode a compiled PowerBuilder menu-tree path (06 §3.3, 09 §C.1, Verified) -- "that coupling is
+ * dropped: permissions in the target name *capabilities*, not menu coordinates."
+ *
+ * NO `tenant_id` here, deliberately: the permission catalogue is a platform-wide capability list
+ * (what the software CAN do), not tenant-owned data (D16 requires tenant_id on tenant-OWNED
+ * tables; the set of capabilities the system exposes is platform metadata every tenant shares).
+ * `role_permission` is what is tenant-scoped, transitively through `role`.
+ */
+export const permissions = mysqlTable(
+  "permission",
+  {
+    permissionId: idPk("permission_id"),
+    code: varchar("code", { length: 80 }).notNull(), // `sale.invoice.create`, `admin.item.visibility.bulk`
+    name: varchar("name", { length: 160 }).notNull(),
+    description: varchar("description", { length: 255 }),
+    // Generalises the legacy Rights.Object split ('A' action = 322 rows, 'W' window = 164 rows,
+    // 09 §C.1, Verified).
+    permissionKind: mysqlEnum("permission_kind", ["action", "view", "field", "report", "admin"])
+      .notNull()
+      .default("action"),
+    // Grant/revoke of a sensitive permission always raises an audit_event + owner notification
+    // (§T15).
+    isSensitive: boolean("is_sensitive").notNull().default(false),
+    legacyRightCode: varchar("legacy_right_code", { length: 16 }), // legacy Rights.RightCode traceability
+    ...auditColumns(),
+    ...softDeleteColumns(),
+  },
+  (table) => ({
+    codeUnique: uniqueIndex("uk_permission_code").on(table.code),
+    legacyUnique: uniqueIndex("uk_permission_legacy").on(table.legacyRightCode),
+  }),
+);
+
+/**
+ * §T16 `role_permission`. **Positive-grant only, matching the verified legacy semantics** --
+ * legacy `GroupRights.Status` is `1` in every one of its 726 rows; there is no deny rule, no
+ * precedence and no inheritance (09 §C.1, Verified). Keeping that model avoids inventing a
+ * precedence system nobody asked for.
+ */
+export const rolePermissions = mysqlTable(
+  "role_permission",
+  {
+    roleId: fkBigIntNotNull("role_id").references(() => roles.roleId),
+    permissionId: fkBigIntNotNull("permission_id").references(() => permissions.permissionId),
+    grantedAt: datetime("granted_at", { fsp: TIMESTAMP_FSP }).notNull(),
+    grantedBy: fkBigInt("granted_by").references(() => appUsers.userId),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.roleId, table.permissionId] }),
+    permIdx: index("ix_role_permission_perm").on(table.permissionId),
+  }),
+);
+
+/**
+ * §T19 `user_role`. **Multiple roles are permitted and are resolved as the union of grants.** The
+ * legacy `fn_GetGroupCode` collapses membership with `SELECT MIN(GroupCode)`, which silently
+ * discards multi-group membership -- and because `ADMINISTRATOR` is `GroupCode 2`, the lowest in
+ * use, adding a user to ADMINISTRATOR *plus* a restricted group would silently grant full admin
+ * server-side (09 §C.1, Verified, Broken/Incomplete). Union-of-grants (no MIN(), no collapsing)
+ * makes that failure mode structurally impossible in the target.
+ */
+export const userRoles = mysqlTable(
+  "user_role",
+  {
+    userId: fkBigIntNotNull("user_id").references(() => appUsers.userId),
+    roleId: fkBigIntNotNull("role_id").references(() => roles.roleId),
+    assignedAt: datetime("assigned_at", { fsp: TIMESTAMP_FSP }).notNull(),
+    assignedBy: fkBigInt("assigned_by").references(() => appUsers.userId),
+    validFrom: datetime("valid_from", { fsp: TIMESTAMP_FSP }),
+    validTo: datetime("valid_to", { fsp: TIMESTAMP_FSP }), // supports temporary elevation
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.roleId] }),
+    roleIdx: index("ix_user_role_role").on(table.roleId),
+  }),
+);
