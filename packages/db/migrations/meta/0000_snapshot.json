@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "22d4d47c-5fd8-4dd8-8325-33b678d42132",
+  "id": "d27797ac-3bc8-455d-bac7-00a9ecb5c4f0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "branch": {
@@ -2566,8 +2566,8 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "gl_account_category_gl_account_main_id_gl_account_main_gl_account_main_id_fk": {
-          "name": "gl_account_category_gl_account_main_id_gl_account_main_gl_account_main_id_fk",
+        "fk_gl_account_category_main": {
+          "name": "fk_gl_account_category_main",
           "tableFrom": "gl_account_category",
           "tableTo": "gl_account_main",
           "columnsFrom": [
@@ -2931,8 +2931,8 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "gl_account_sub_gl_account_category_id_gl_account_category_gl_account_category_id_fk": {
-          "name": "gl_account_sub_gl_account_category_id_gl_account_category_gl_account_category_id_fk",
+        "fk_gl_account_sub_category": {
+          "name": "fk_gl_account_sub_category",
           "tableFrom": "gl_account_sub",
           "tableTo": "gl_account_category",
           "columnsFrom": [

@@ -20,6 +20,7 @@ import {
   date,
   datetime,
   decimal,
+  foreignKey,
   index,
   mysqlEnum,
   mysqlTable,
@@ -61,7 +62,11 @@ export const glAccountCategories = mysqlTable(
   {
     glAccountCategoryId: idPk("gl_account_category_id"),
     tenantId: fkBigIntNotNull("tenant_id").references(() => tenants.tenantId),
-    glAccountMainId: fkBigIntNotNull("gl_account_main_id").references(() => glAccountMains.glAccountMainId),
+    // Plain column (no inline .references()) -- the FK is declared explicitly below via
+    // foreignKey({name: ...}) because Drizzle's auto-generated name for this column
+    // (`gl_account_category_gl_account_main_id_gl_account_main_gl_account_main_id_fk`, 76 chars)
+    // exceeds MySQL's 64-character identifier limit (ER_TOO_LONG_IDENT).
+    glAccountMainId: fkBigIntNotNull("gl_account_main_id"),
     code: varchar("code", { length: 32 }).notNull(),
     name: varchar("name", { length: 120 }).notNull(),
     nameUr: varchar("name_ur", { length: 120 }),
@@ -74,6 +79,11 @@ export const glAccountCategories = mysqlTable(
   (table) => ({
     codeUnique: uniqueIndex("uk_gl_account_category_tenant_code").on(table.tenantId, table.code),
     mainIdx: index("ix_gl_account_category_main").on(table.glAccountMainId),
+    mainFk: foreignKey({
+      name: "fk_gl_account_category_main",
+      columns: [table.glAccountMainId],
+      foreignColumns: [glAccountMains.glAccountMainId],
+    }),
   }),
 );
 
@@ -86,7 +96,9 @@ export const glAccountSubs = mysqlTable(
   {
     glAccountSubId: idPk("gl_account_sub_id"),
     tenantId: fkBigIntNotNull("tenant_id").references(() => tenants.tenantId),
-    glAccountCategoryId: fkBigIntNotNull("gl_account_category_id").references(() => glAccountCategories.glAccountCategoryId),
+    // Plain column -- see the matching comment on gl_account_category.gl_account_main_id above.
+    // Drizzle's auto-generated name here is 83 chars, also over MySQL's 64-char limit.
+    glAccountCategoryId: fkBigIntNotNull("gl_account_category_id"),
     code: varchar("code", { length: 32 }).notNull(),
     name: varchar("name", { length: 120 }).notNull(),
     nameUr: varchar("name_ur", { length: 120 }),
@@ -101,6 +113,11 @@ export const glAccountSubs = mysqlTable(
   (table) => ({
     codeUnique: uniqueIndex("uk_gl_account_sub_tenant_code").on(table.tenantId, table.code),
     categoryIdx: index("ix_gl_account_sub_category").on(table.glAccountCategoryId),
+    categoryFk: foreignKey({
+      name: "fk_gl_account_sub_category",
+      columns: [table.glAccountCategoryId],
+      foreignColumns: [glAccountCategories.glAccountCategoryId],
+    }),
   }),
 );
 

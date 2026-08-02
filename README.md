@@ -7,7 +7,7 @@ specific, evidence-based finding — nothing in this repository is invented.
 ## Before touching this code, read the analysis
 
 The complete, evidence-based analysis of the legacy system and the binding architecture
-blueprint both live in `../docs/system-analysis/`. In particular:
+blueprint both live in `docs/system-analysis/`. In particular:
 
 - `00b-owner-decisions-and-requirements.md` — binding owner decisions (D1–D21) and
   project-wide design principles (P1). These override anything inferred from code.
@@ -39,6 +39,13 @@ pnpm install
 pnpm build
 pnpm test
 ```
+
+## CI: heavy compute runs in GitHub Actions, not on the laptop
+
+Hard project rule — see [`CLAUDE.md`](CLAUDE.md) for the full policy. Install/build/typecheck/test
+and DB migration verification run in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) against
+a real ephemeral MySQL service container, on every push and PR. Push and let CI verify instead of
+re-running the whole-repo checks locally.
 
 ## The one rule that matters most
 

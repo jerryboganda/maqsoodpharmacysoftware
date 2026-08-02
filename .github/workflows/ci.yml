@@ -1,0 +1,67 @@
+name: CI
+
+# Hard project rule (see /CLAUDE.md "GitHub Actions for heavy compute"): typecheck, build, test,
+# and DB migration verification run here, not on a contributor's laptop.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI-only credential for the ephemeral MySQL service container below. Never used outside this job.
+  CI_DB_PASSWORD: "ci_root_password"
+
+jobs:
+  typecheck-build-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_password
+          MYSQL_DATABASE: pharmacy_platform_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot -u root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck
+
+      - name: Build
+        run: pnpm turbo run build
+
+      - name: Test
+        run: pnpm turbo run test
+
+      - name: Apply DB migrations against a real MySQL instance
+        working-directory: packages/db
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ${{ env.CI_DB_PASSWORD }}
+          DB_NAME: pharmacy_platform_ci
+        run: pnpm run migrate
