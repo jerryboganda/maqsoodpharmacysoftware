@@ -1,0 +1,25 @@
+/* Blueprint: docs/system-analysis/17-technical-blueprint.md §8.6 -- Tailwind CSS 4, a
+   design-token layer (spacing, type scale, colour, focus-ring) expressed once. This file is
+   deliberately small in Phase 1: the three surfaces (§8.9) and the RAC-based component
+   library (§8.6) will extend `@theme` as they are built, not before. */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+}
+
+/* WCAG 2.2 Focus Appearance (§8.6 non-negotiable #3): every focusable control keeps a
+   visible, 3:1-contrast focus ring. Never `outline: none` without an equivalent replacement. */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
