@@ -4,8 +4,10 @@
 // the only writers of stock_movement / item_cost_snapshot).
 import { Module } from "@nestjs/common";
 
+import { AdjustmentReasonsService } from "./application/adjustment-reasons.service.js";
 import { StockAdjustmentService } from "./application/stock-adjustment.service.js";
 import { StockQueryService } from "./application/stock-query.service.js";
+import { AdjustmentReasonsController } from "./api/adjustment-reasons.controller.js";
 import { StockAdjustmentsController } from "./api/stock-adjustments.controller.js";
 import { StockController } from "./api/stock.controller.js";
 import { CostingService } from "./infrastructure/costing.service.js";
@@ -13,8 +15,15 @@ import { StockService } from "./infrastructure/stock.service.js";
 import { TenantContextService } from "./infrastructure/tenant-context.service.js";
 
 @Module({
-  controllers: [StockController, StockAdjustmentsController],
-  providers: [StockService, CostingService, TenantContextService, StockQueryService, StockAdjustmentService],
+  controllers: [StockController, StockAdjustmentsController, AdjustmentReasonsController],
+  providers: [
+    StockService,
+    CostingService,
+    TenantContextService,
+    StockQueryService,
+    StockAdjustmentService,
+    AdjustmentReasonsService,
+  ],
   exports: [StockService, CostingService],
 })
 export class InventoryModule {}

@@ -13,6 +13,7 @@ import { IdempotencyInterceptor } from "./common/idempotency/idempotency.interce
 import { IdempotencyStore, InMemoryIdempotencyStore } from "./common/idempotency/idempotency-store.js";
 import { ZodValidationPipe } from "./common/validation/zod-validation.pipe.js";
 import { DocflowModule } from "./common/docflow/index.js";
+import { CatalogModule } from "./modules/catalog/index.js";
 import { IdentityModule } from "./modules/identity/index.js";
 import { InventoryModule } from "./modules/inventory/index.js";
 import { PurchasingModule } from "./modules/purchasing/index.js";
@@ -20,7 +21,15 @@ import { SalesModule } from "./modules/sales/index.js";
 import { SettingsModule } from "./modules/settings/index.js";
 
 @Module({
-  imports: [DocflowModule, IdentityModule, SettingsModule, InventoryModule, PurchasingModule, SalesModule],
+  imports: [
+    DocflowModule,
+    IdentityModule,
+    SettingsModule,
+    CatalogModule,
+    InventoryModule,
+    PurchasingModule,
+    SalesModule,
+  ],
   providers: [
     // Order matters: SessionGuard attaches `request.actor` before PermissionGuard reads it.
     { provide: APP_GUARD, useClass: SessionGuard },
