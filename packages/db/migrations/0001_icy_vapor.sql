@@ -1,0 +1,2 @@
+DROP INDEX `ix_purchase_supp_inv` ON `purchase_invoice`;--> statement-breakpoint
+ALTER TABLE `purchase_invoice` ADD CONSTRAINT `uk_purchase_supp_inv` UNIQUE(`tenant_id`,`supplier_id`,`supplier_invoice_no`);

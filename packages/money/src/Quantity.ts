@@ -1,11 +1,19 @@
-// Blueprint: docs/system-analysis/17-technical-blueprint.md §6.1-6.4.
-// A stock/sale quantity. Same design rules as Money: no valueOf()/toNumber(), never coerced
-// to a JS number, arithmetic only through named methods. Default scale 3 (pieces/strips/ml).
+// Blueprint: docs/system-analysis/17-technical-blueprint.md §6.1-6.4, §6.2's QUANTITY
+// archetype (packages/db/schema/_shared.ts `QUANTITY = { precision: 15, scale: 4 }`, used by
+// every stock/pack/line quantity column in the schema). A stock/sale quantity. Same design
+// rules as Money: no valueOf()/toNumber(), never coerced to a JS number, arithmetic only
+// through named methods.
+//
+// Scale is 4, matching the DB archetype exactly -- this used to be hardcoded to 3, which
+// silently truncated any 4th-decimal digit on every quantity round-tripped through this class
+// (a real bug: apps/api/src/common/validation/money-schemas.ts's `zQuantity` claims "field-
+// specific scale ... enforced by the value-object parser", but the parser was capped one
+// digit short of what the columns it feeds actually store).
 import { Decimal } from "./config.js";
 import { parseDecimalInput } from "./internal/parse.js";
 import { ok, type ParseError, type Result, type RoundingMode } from "./types.js";
 
-const DEFAULT_SCALE = 3;
+const DEFAULT_SCALE = 4;
 
 export class Quantity {
   static readonly SCALE = DEFAULT_SCALE;

@@ -12,11 +12,15 @@ import { GlobalExceptionFilter } from "./common/errors/global-exception.filter.j
 import { IdempotencyInterceptor } from "./common/idempotency/idempotency.interceptor.js";
 import { IdempotencyStore, InMemoryIdempotencyStore } from "./common/idempotency/idempotency-store.js";
 import { ZodValidationPipe } from "./common/validation/zod-validation.pipe.js";
+import { DocflowModule } from "./common/docflow/index.js";
 import { IdentityModule } from "./modules/identity/index.js";
+import { InventoryModule } from "./modules/inventory/index.js";
+import { PurchasingModule } from "./modules/purchasing/index.js";
+import { SalesModule } from "./modules/sales/index.js";
 import { SettingsModule } from "./modules/settings/index.js";
 
 @Module({
-  imports: [IdentityModule, SettingsModule],
+  imports: [DocflowModule, IdentityModule, SettingsModule, InventoryModule, PurchasingModule, SalesModule],
   providers: [
     // Order matters: SessionGuard attaches `request.actor` before PermissionGuard reads it.
     { provide: APP_GUARD, useClass: SessionGuard },

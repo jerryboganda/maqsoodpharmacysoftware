@@ -214,7 +214,13 @@ export const purchaseInvoices = mysqlTable(
     journalUnique: uniqueIndex("uk_purchase_invoice_journal").on(table.journalEntryId),
     supplierIdx: index("ix_purchase_supplier").on(table.supplierId, table.postingDate),
     openIdx: index("ix_purchase_open").on(table.supplierId, table.balanceAmount), // aged payables, R2.6
-    suppInvIdx: index("ix_purchase_supp_inv").on(table.supplierId, table.supplierInvoiceNo), // duplicate-invoice detection
+    // Was a plain (non-unique) index -- duplicate-invoice detection was TOCTOU (service-level
+    // SELECT-then-INSERT with nothing backing it at the DB layer: two concurrent requests for
+    // the same supplier+supplierInvoiceNo could both pass the check and both post). MySQL treats
+    // NULLs as distinct in a unique index, so suppliers/invoices with no supplierInvoiceNo never
+    // collide here -- only a genuinely repeated supplier_invoice_no for the same tenant+supplier
+    // does, which is the desired behaviour.
+    suppInvUnique: uniqueIndex("uk_purchase_supp_inv").on(table.tenantId, table.supplierId, table.supplierInvoiceNo),
     tenantFk: foreignKey({ name: "fk_pi_tenant", columns: [table.tenantId], foreignColumns: [tenants.tenantId] }),
     branchFk: foreignKey({ name: "fk_pi_branch", columns: [table.branchId], foreignColumns: [branches.branchId] }),
     categoryFk: foreignKey({

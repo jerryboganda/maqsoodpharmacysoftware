@@ -56,3 +56,19 @@ export const zQuantity = zDecimalString("quantity").transform((raw, ctx) => unwr
 
 /** A percentage (discount %, tax %, margin %, ...), parsed into a `Percent` value object. */
 export const zPercent = zDecimalString("percentage").transform((raw, ctx) => unwrapOrIssue(Percent.fromInput(raw), ctx));
+
+/** Wire-level regex for UNIT_PRICE-archetype fields: DECIMAL(15,4) columns such as
+ *  sale_invoice_line.unit_sale_price. Same shape as DECIMAL_RE but caps decimals at 4 instead
+ *  of 5 -- DECIMAL_RE's 5dp ceiling is the widest §6.2 archetype, not this column's actual
+ *  scale, so it silently accepted a 5th decimal digit the DB would truncate. */
+export const DECIMAL_4DP_RE = /^-?\d{1,15}(?:\.\d{1,4})?$/;
+
+/** Raw decimal-string schema scaled to UNIT_PRICE-archetype fields (4dp), for callers that only
+ *  need to pass the value through (mirrors `zDecimalString`'s pass-through contract, just at the
+ *  narrower scale this column family actually stores). Additive alongside `zDecimalString` --
+ *  does not replace it for fields whose archetype is wider (money/qty stay at their own scales). */
+export function zDecimalString4dp(label = "amount") {
+  return z
+    .string()
+    .regex(DECIMAL_4DP_RE, `${label} must be a decimal string with at most 4 decimal places, e.g. "123.4567" (not a number)`);
+}

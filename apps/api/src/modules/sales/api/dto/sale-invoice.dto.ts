@@ -1,0 +1,59 @@
+// Blueprint: docs/system-analysis/05a-workflows-sales.md (cash sale S-1);
+// 17-technical-blueprint.md §6.3/§6.7 -- every money/qty field is a decimal STRING (Rule M),
+// validated by regex at the wire and parsed through @pharmacy/money in the service, never
+// `Number()`.
+import { createZodDto } from "nestjs-zod";
+import { z } from "zod";
+
+import { zDecimalString, zDecimalString4dp } from "../../../../common/validation/index.js";
+
+const BUSINESS_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export const SaleInvoiceIdParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+export class SaleInvoiceIdParamDto extends createZodDto(SaleInvoiceIdParamSchema) {}
+
+export const ListSaleInvoicesQuerySchema = z.object({
+  customerId: z.coerce.number().int().positive().optional(),
+  status: z.enum(["draft", "confirmed", "posted", "cancelled", "reversed"]).optional(),
+  dateFrom: z.string().regex(BUSINESS_DATE_RE, "dateFrom must be YYYY-MM-DD").optional(),
+  dateTo: z.string().regex(BUSINESS_DATE_RE, "dateTo must be YYYY-MM-DD").optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export class ListSaleInvoicesQueryDto extends createZodDto(ListSaleInvoicesQuerySchema) {}
+
+const SaleLineSchema = z.object({
+  itemId: z.number().int().positive(),
+  /** Requested quantity in LOOSE units (08 §5.2 -- unit price is per loose unit). */
+  qty: zDecimalString("qty"),
+  /** Per-LOOSE-unit sale price. Optional -- see the service's price-resolution rules.
+   *  sale_invoice_line.unit_sale_price is DECIMAL(15,4) (UNIT_PRICE archetype) -- validated at
+   *  that exact scale, not the wider 5dp `zDecimalString` ceiling. */
+  unitSalePrice: zDecimalString4dp("unitSalePrice").optional(),
+  /** Discounts are a later increment (rounding ladder M-5) -- any non-zero value is a 422. */
+  discountPercent: zDecimalString("discountPercent").optional(),
+  itemFlatDiscount: zDecimalString("itemFlatDiscount").optional(),
+});
+
+const SalePaymentSchema = z.object({
+  paymentMethodId: z.number().int().positive(),
+  amount: zDecimalString("amount"),
+  referenceNo: z.string().max(64).optional(),
+});
+
+export const CreateSaleInvoiceSchema = z.object({
+  /** Defaults to the seeded walk-in customer (00b D5) when omitted. */
+  customerId: z.number().int().positive().optional(),
+  /** Defaults to the tenant's default sale category (seed: CASH_SALE). */
+  saleCategoryId: z.number().int().positive().optional(),
+  documentDate: z.string().regex(BUSINESS_DATE_RE, "documentDate must be YYYY-MM-DD"),
+  lines: z.array(SaleLineSchema).min(1).max(200),
+  payments: z.array(SalePaymentSchema).min(1).max(10),
+  /** Header discounts: same not-implemented gate as line discounts. */
+  invoiceDiscountPercent: zDecimalString("invoiceDiscountPercent").optional(),
+  invoiceDiscountAmount: zDecimalString("invoiceDiscountAmount").optional(),
+  notes: z.string().max(1000).optional(),
+});
+export class CreateSaleInvoiceDto extends createZodDto(CreateSaleInvoiceSchema) {}

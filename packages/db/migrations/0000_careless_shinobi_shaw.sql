@@ -891,7 +891,8 @@ CREATE TABLE `stock_adjustment` (
 	`approved_at` datetime(3),
 	`stock_take_id` bigint unsigned,
 	CONSTRAINT `stock_adjustment_stock_adjustment_id` PRIMARY KEY(`stock_adjustment_id`),
-	CONSTRAINT `uk_stock_adjustment_doc` UNIQUE(`doc_series_id`,`doc_number`)
+	CONSTRAINT `uk_stock_adjustment_doc` UNIQUE(`doc_series_id`,`doc_number`),
+	CONSTRAINT `ck_adjustment_approval` CHECK(`stock_adjustment`.`requires_approval` = 0 or `stock_adjustment`.`status` <> 'posted' or `stock_adjustment`.`approved_by` is not null)
 );
 --> statement-breakpoint
 CREATE TABLE `stock_balance` (
