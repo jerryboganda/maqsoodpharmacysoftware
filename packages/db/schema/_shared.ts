@@ -17,7 +17,7 @@
 // generated migration SQL before it is committed -- this is a tooling limitation, not a decision
 // to skip §2.2.
 import { sql } from "drizzle-orm";
-import { bigint, datetime, int, mysqlEnum, varchar } from "drizzle-orm/mysql-core";
+import { bigint, boolean, date, datetime, int, mysqlEnum, smallint, varchar } from "drizzle-orm/mysql-core";
 
 // Blueprint §2.1 S7 / task instruction: "prefer bigint unsigned auto_increment ... use bigint
 // unsigned auto_increment and note the choice in a comment". §19 S7 itself: "Surrogate keys
@@ -67,6 +67,78 @@ export function auditColumns() {
     updatedAt: datetime("updated_at", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
     updatedBy: fkBigInt("updated_by"),
     rowVersion: int("row_version", { unsigned: true }).notNull().default(1),
+  };
+}
+
+// Blueprint §4.4 Pack DOC -- transactional document header pack, applied to sale_invoice,
+// sale_return, purchase_invoice, purchase_return, purchase_order, stock_adjustment (and later
+// stock_take, payment, expense). Column-for-column from §4.4 with the deviations this package
+// already standardises on:
+//   - every reference column here is a *soft* reference (same reasoning as auditColumns'
+//     created_by): docSeriesId/documentTypeId/fiscalPeriodId FK into docflow.ts tables and
+//     cancelReasonId FKs into option_item (cancel_reason is a P1 option list, per options.ts's
+//     header comment) -- hard `.references()` from a shared helper would be circular. Tables
+//     that want DB-enforced FKs add them in their own extra-config callback.
+//   - §4.4's `warehouse_id` is `branch_id` in this package (see tenant.ts branches TODO and
+//     catalog.ts stockLots -- there is no separate warehouse table).
+//   - §4.4's CHECK ck_<doc>_posted / ck_<doc>_cancel constraints cannot be expressed through
+//     drizzle-orm 0.36 (no check builder) -- enforced at the service layer and hand-added to
+//     migration SQL per the documented generate -> review -> commit flow.
+//   - `machine_name` (till workstation, X-Workstation header) kept per §4.4.
+// The PK and tenant/branch columns are NOT part of this pack -- each table declares its own
+// `<doc>_id` idPk plus tenantId/branchId with real FKs, per the package's tenant-scoping rule.
+export function docColumns() {
+  return {
+    docNumber: varchar("doc_number", { length: 32 }).notNull(),
+    docSeriesId: fkBigIntNotNull("doc_series_id"),
+    documentTypeId: fkBigIntNotNull("document_type_id"),
+    documentDate: date("document_date").notNull(),
+    postingDate: date("posting_date").notNull(),
+    fiscalPeriodId: fkBigIntNotNull("fiscal_period_id"),
+    status: mysqlEnum("status", ["draft", "confirmed", "posted", "cancelled", "reversed"])
+      .notNull()
+      .default("draft"),
+    postedAt: datetime("posted_at", { fsp: 3 }),
+    postedBy: fkBigInt("posted_by"),
+    cancelledAt: datetime("cancelled_at", { fsp: 3 }),
+    cancelledBy: fkBigInt("cancelled_by"),
+    cancelReasonId: fkBigInt("cancel_reason_id"), // soft ref -> option_item (list `cancel_reason`)
+    reversalOfId: fkBigInt("reversal_of_id"), // self-reference, soft (same-table FK)
+    notes: varchar("notes", { length: 1000 }),
+    machineName: varchar("machine_name", { length: 64 }),
+    legacyId: fkBigInt("legacy_id"),
+    ...auditColumns(),
+    // No SD pack on documents (§4.4): cancelled/reversed via status, never deleted (N-3, §7.6).
+  };
+}
+
+// Blueprint §4.3 Pack LK -- behavioural lookup pack, for the handful of pick-lists §19 gives
+// dedicated tables with extra behavioural columns (adjustment_reason, sale_category,
+// purchase_category, payment_method, salesman) instead of generic option_item rows. Mirrors
+// option_item's P1 columns (options.ts §8.3 mapping) so the UI treats both uniformly.
+export function lkColumns() {
+  return {
+    code: varchar("code", { length: 32 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    description: varchar("description", { length: 255 }),
+    isEnabled: boolean("is_enabled").notNull().default(true), // P1.3 -- disable, never delete
+    isDefault: boolean("is_default").notNull().default(false), // P1.2 -- at most one per tenant list (enforce via functional unique per table)
+    sortOrder: smallint("sort_order", { unsigned: true }).notNull().default(100), // P1.6
+    ...auditColumns(),
+    ...softDeleteColumns(),
+  };
+}
+
+// Append-only audit subset -- §T57/T59 (stock_movement, item_cost_snapshot, payment_allocation):
+// these tables forbid updated_*/row_version because rows are never updated (append-only via
+// service discipline; §T57's BEFORE UPDATE/DELETE triggers are hand-added to migration SQL).
+export function appendOnlyAuditColumns() {
+  return {
+    createdAt: datetime("created_at", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+    createdBy: fkBigInt("created_by"),
+    createdSource: mysqlEnum("created_source", ["ui", "api", "migration", "system_job", "import"])
+      .notNull()
+      .default("ui"),
   };
 }
 

@@ -148,12 +148,20 @@ export const stockLots = mysqlTable(
     expiryDate: date("expiry_date"), // NULL, never 2030-12-12. DATE not DATETIME (§3.6 -- removes the time-component landmine)
     expiryStatus: mysqlEnum("expiry_status", ["known", "unknown", "not_applicable"]).notNull().default("known"),
     manufacturedOn: date("manufactured_on"), // legacy GodownDetail.ManfDate
+    // §T56 recall traceability (R4.5): which supplier delivered this lot, and through which
+    // document. Soft references (bare columns) -- supplier lives in parties.ts and document_type
+    // in docflow.ts, both of which import catalog concepts; hard FKs here would be circular.
+    supplierId: fkBigInt("supplier_id"), // soft ref -> supplier (parties.ts)
+    sourceDocumentTypeId: fkBigInt("source_document_type_id"), // soft ref -> document_type (docflow.ts)
+    sourceDocumentId: fkBigInt("source_document_id"), // the purchase_invoice (etc.) that created the lot
     receivedOn: date("received_on"),
     receiptUnitCost: decimal("receipt_unit_cost", UNIT_PRICE), // informational -- costing stays at item level (R4.5)
     // Replaces legacy GodownDetail.Locked char(1).
     lotStatus: mysqlEnum("lot_status", ["available", "quarantined", "expired", "recalled", "consumed"])
       .notNull()
       .default("available"),
+    // §T56: why a lot is quarantined/held -- soft ref -> option_item (P1 list `stock_hold_reason`).
+    holdReasonId: fkBigInt("hold_reason_id"),
     priority: smallint("priority", { unsigned: true }).notNull().default(10), // FEFO consumption rank, lower first
     // §T56: "MySQL treats multiple NULLs as distinct, so a naive UNIQUE(item_id, batch_no,
     // expiry_date) would permit unlimited duplicate 'unknown' lots" -- the blueprint's own fix,
@@ -179,5 +187,7 @@ export const stockLots = mysqlTable(
     expiryIdx: index("ix_stock_lot_expiry").on(table.branchId, table.expiryDate, table.lotStatus), // R4.2 dashboard
     fefoIdx: index("ix_stock_lot_item_fefo").on(table.itemId, table.lotStatus, table.priority, table.expiryDate), // R4.3
     batchIdx: index("ix_stock_lot_batch").on(table.batchNo), // R4.5 recall traceability
+    supplierIdx: index("ix_stock_lot_supplier").on(table.supplierId, table.receivedOn), // §T56 recall by supplier
+    legacyUnique: uniqueIndex("uk_stock_lot_legacy").on(table.legacyKey), // §T56 reconciliation key
   }),
 );
