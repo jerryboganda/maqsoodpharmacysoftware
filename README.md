@@ -40,6 +40,17 @@ pnpm build
 pnpm test
 ```
 
+To run `apps/api` against a real local MySQL 8.4 database (see `.env.example` for the expected
+variables):
+
+```bash
+cd packages/db
+pnpm run migrate   # applies migrations/*.sql
+pnpm run seed      # dev tenant/branch/roles/dev.owner user + the P1 option lists (idempotent)
+cd ../../apps/api
+pnpm run dev       # reads ../../.env; GET /identity/me, /settings/options/:key now hit real data
+```
+
 ## CI: heavy compute runs in GitHub Actions, not on the laptop
 
 Hard project rule — see [`CLAUDE.md`](CLAUDE.md) for the full policy. Install/build/typecheck/test

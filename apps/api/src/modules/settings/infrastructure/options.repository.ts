@@ -1,83 +1,69 @@
 // Blueprint: docs/system-analysis/17-technical-blueprint.md §10.2 (schema), §10.5 (the P1
 // areas from 00b, mapped to option-set keys).
 //
-// TODO: wire to @pharmacy/db once its `option_set`/`option_value` schema lands (a parallel
-// agent owns packages/db/schema -- see the migration note in this repo's task brief). This
-// repository's shape (`listValues(setKey)`) is what that swap must preserve; reconcile the
-// field names below (camelCase) against whatever column names `@pharmacy/db`'s `options.ts`
-// exports and adjust the mapping in the real implementation, not the call sites in
-// `application/settings.service.ts`.
+// Reconciles this repository's shape (`listValues(setKey)`) against @pharmacy/db's
+// `option_list`/`option_item` column names (packages/db/schema/options.ts): `displayName` <-
+// `name`, `helpText` <- `description` (option_item has no dedicated help_text column distinct
+// from description; §10.5's option_value.help_text and this table's description serve the same
+// purpose). `groupLabel`/`minPermission`/`searchTerms`/`meta` map onto the matching §10.5 columns
+// added to option_item alongside this wiring.
 //
-// Until then, this seeds a representative slice of §10.5's table in memory so
-// `GET /settings/options/:key` is exercisable end-to-end.
+// Phase 1 has exactly one tenant in practice (the seeded "dev" tenant, packages/db/scripts/
+// seed.ts) and no tenant-resolution middleware yet -- every query below is scoped to the actor's
+// own tenant (Actor has no tenantId field yet either; see TODO on listValues). Multi-tenant
+// request-scoping is a real gap, tracked here rather than silently assumed away.
 import { Injectable } from "@nestjs/common";
+import { eq } from "drizzle-orm";
+import { getDb, optionItems, optionLists } from "@pharmacy/db";
 
 import type { OptionValue } from "../domain/option-value.js";
 
-let nextId = 1;
-function v(
-  setKey: string,
-  code: string,
-  displayName: string,
-  opts: Partial<Pick<OptionValue, "isDefault" | "isEnabled" | "groupLabel" | "sortOrder" | "meta" | "minPermission" | "helpText" | "searchTerms">> = {},
-): OptionValue {
-  return {
-    optionValueId: String(nextId++),
-    setKey,
-    code,
-    displayName,
-    helpText: opts.helpText ?? null,
-    groupLabel: opts.groupLabel ?? null,
-    sortOrder: opts.sortOrder ?? 100,
-    isEnabled: opts.isEnabled ?? true,
-    isDefault: opts.isDefault ?? false,
-    isSystem: true,
-    minPermission: opts.minPermission ?? null,
-    searchTerms: opts.searchTerms ?? null,
-    meta: opts.meta ?? null,
-  };
-}
-
-const SEED: Record<string, readonly OptionValue[]> = {
-  "supplier_payment.method": [
-    v("supplier_payment.method", "CASH", "Cash", { isDefault: true, groupLabel: "Cash", sortOrder: 10 }),
-    v("supplier_payment.method", "BANK_TRANSFER", "Bank transfer", { groupLabel: "Bank", sortOrder: 20, meta: { requiresReference: true } }),
-    v("supplier_payment.method", "CHEQUE", "Cheque", { groupLabel: "Bank", sortOrder: 30, meta: { requiresReference: true } }),
-    v("supplier_payment.method", "BANK_DRAFT", "Bank draft / pay order", { groupLabel: "Bank", sortOrder: 40, meta: { requiresReference: true } }),
-    v("supplier_payment.method", "IBFT", "Online / IBFT", { groupLabel: "Digital wallet", sortOrder: 50 }),
-    v("supplier_payment.method", "EASYPAISA", "Easypaisa", { groupLabel: "Digital wallet", sortOrder: 60 }),
-    v("supplier_payment.method", "JAZZCASH", "JazzCash", { groupLabel: "Digital wallet", sortOrder: 70 }),
-    v("supplier_payment.method", "CREDIT_NOTE", "Credit-note adjustment", { groupLabel: "Adjustment", sortOrder: 80 }),
-  ],
-  "sale.tender_method": [
-    v("sale.tender_method", "CASH", "Cash", { isDefault: true, sortOrder: 10 }),
-    v("sale.tender_method", "CARD", "Card", { sortOrder: 20 }),
-    v("sale.tender_method", "MOBILE_WALLET", "Mobile wallet", { sortOrder: 30 }),
-    v("sale.tender_method", "MIXED", "Mixed / split", { sortOrder: 40 }),
-    // Credit ships disabled -- walk-in cash only today (D5); the switch exists, the option
-    // is simply off, not removed (P1.3).
-    v("sale.tender_method", "CREDIT", "Credit", { sortOrder: 50, isEnabled: false }),
-  ],
-  "stock_adjustment.reason": [
-    v("stock_adjustment.reason", "DAMAGE", "Damage", { sortOrder: 10 }),
-    v("stock_adjustment.reason", "EXPIRY", "Expiry", { sortOrder: 20 }),
-    v("stock_adjustment.reason", "THEFT_SHRINKAGE", "Theft / shrinkage", { sortOrder: 30 }),
-    v("stock_adjustment.reason", "COUNT_CORRECTION", "Count correction", { sortOrder: 40 }),
-    v("stock_adjustment.reason", "SAMPLE_DONATION", "Sample / donation", { sortOrder: 50 }),
-    v("stock_adjustment.reason", "BREAKAGE", "Breakage", { sortOrder: 60 }),
-    v("stock_adjustment.reason", "OTHER", "Other", { sortOrder: 70 }),
-    // Deliberately no default (§10.5): a defaulted reason would perpetuate the legacy's
-    // unexplained-shrinkage problem (03 T1-31).
-  ],
-};
-
 @Injectable()
 export class OptionsRepository {
-  listValues(setKey: string): Promise<readonly OptionValue[]> {
-    return Promise.resolve(SEED[setKey] ?? []);
+  // TODO(real multi-tenancy): scope this query by the caller's tenant once Actor carries a
+  // tenantId (see this file's header comment) -- today `listCode` alone resolves the row because
+  // only the seeded "dev" tenant exists.
+  async listValues(setKey: string): Promise<readonly OptionValue[]> {
+    const db = getDb();
+    const rows = await db
+      .select({
+        optionItemId: optionItems.optionItemId,
+        code: optionItems.code,
+        name: optionItems.name,
+        description: optionItems.description,
+        groupLabel: optionItems.groupLabel,
+        sortOrder: optionItems.sortOrder,
+        isEnabled: optionItems.isEnabled,
+        isDefault: optionItems.isDefault,
+        isSystem: optionItems.isSystem,
+        minPermission: optionItems.minPermission,
+        searchTerms: optionItems.searchTerms,
+        metaJson: optionItems.metaJson,
+      })
+      .from(optionItems)
+      .innerJoin(optionLists, eq(optionItems.optionListId, optionLists.optionListId))
+      .where(eq(optionLists.listCode, setKey));
+
+    return rows.map((row) => ({
+      optionValueId: String(row.optionItemId),
+      setKey,
+      code: row.code,
+      displayName: row.name,
+      helpText: row.description,
+      groupLabel: row.groupLabel,
+      sortOrder: row.sortOrder,
+      isEnabled: row.isEnabled,
+      isDefault: row.isDefault,
+      isSystem: row.isSystem,
+      minPermission: row.minPermission,
+      searchTerms: row.searchTerms,
+      meta: row.metaJson,
+    }));
   }
 
-  isKnownSet(setKey: string): Promise<boolean> {
-    return Promise.resolve(setKey in SEED);
+  async isKnownSet(setKey: string): Promise<boolean> {
+    const db = getDb();
+    const [row] = await db.select({ optionListId: optionLists.optionListId }).from(optionLists).where(eq(optionLists.listCode, setKey));
+    return row !== undefined;
   }
 }

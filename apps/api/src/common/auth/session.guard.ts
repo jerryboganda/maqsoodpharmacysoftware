@@ -34,7 +34,10 @@ function resolveDevActor(): Actor {
     hasWarned = true;
   }
   return {
-    userId: "dev-0",
+    // Matches packages/db/scripts/seed.ts's dev.owner row (user_id=1, deterministic on a
+    // freshly-migrated + freshly-seeded database -- that script is the only writer to app_user
+    // in dev). UserRepository resolves this id for real against @pharmacy/db.
+    userId: "1",
     username: "dev.owner",
     displayName: "Dev Owner (stub)",
     roles: ["owner"],

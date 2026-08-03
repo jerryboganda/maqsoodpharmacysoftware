@@ -65,3 +65,16 @@ jobs:
           DB_PASSWORD: ${{ env.CI_DB_PASSWORD }}
           DB_NAME: pharmacy_platform_ci
         run: pnpm run migrate
+
+      - name: Seed dev fixture data and verify idempotency
+        working-directory: packages/db
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ${{ env.CI_DB_PASSWORD }}
+          DB_NAME: pharmacy_platform_ci
+        # Runs twice: the second run must be a no-op (see seed.ts's header comment), not a
+        # duplicate-row failure -- this is a real regression the CI run can catch that a single
+        # local run wouldn't.
+        run: pnpm run seed && pnpm run seed

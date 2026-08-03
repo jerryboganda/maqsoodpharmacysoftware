@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "d27797ac-3bc8-455d-bac7-00a9ecb5c4f0",
+  "id": "1e69239f-9b1e-4fcc-9aa2-54fce8651606",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "branch": {
@@ -1398,6 +1398,34 @@
         "description": {
           "name": "description",
           "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "group_label": {
+          "name": "group_label",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "min_permission": {
+          "name": "min_permission",
+          "type": "varchar(96)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "search_terms": {
+          "name": "search_terms",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "meta_json": {
+          "name": "meta_json",
+          "type": "json",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

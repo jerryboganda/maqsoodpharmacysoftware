@@ -5,9 +5,9 @@
   "description": "The modular monolith -- NestJS 11 on the Fastify adapter. docs/system-analysis/17-technical-blueprint.md Part 3-4.",
   "type": "module",
   "scripts": {
-    "dev": "node --watch --import ./scripts/register-loader.mjs src/main.ts",
+    "dev": "node --env-file=../../.env --watch --import ./scripts/register-loader.mjs src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node --import ./scripts/register-loader.mjs src/main.ts",
+    "start": "node --env-file=../../.env --import ./scripts/register-loader.mjs src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -15,7 +15,9 @@
     "@nestjs/core": "^11.0.10",
     "@nestjs/platform-fastify": "^11.0.10",
     "@pharmacy/config": "workspace:*",
+    "@pharmacy/db": "workspace:*",
     "@pharmacy/money": "workspace:*",
+    "drizzle-orm": "^0.36.4",
     "fastify": "^5.10.0",
     "nestjs-zod": "^4.3.1",
     "reflect-metadata": "^0.2.2",

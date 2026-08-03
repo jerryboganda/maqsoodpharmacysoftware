@@ -8,13 +8,19 @@
     // transpiles .ts on the fly) resolves extensionless relative specifiers to their sibling .ts
     // file, but fails on an explicit `./tenant.js` specifier -- Node's CJS resolver takes an
     // explicit extension literally and never reaches the .ts fallback, so `require('./tenant.js')`
-    // throws MODULE_NOT_FOUND (there is no compiled tenant.js on disk; this package ships TS
-    // source directly, per its `main`/`types` fields). NodeNext mandates explicit `.js` extensions
-    // on relative ESM imports, which is exactly what breaks the loader. Bundler resolution allows
-    // (and this package's schema/*.ts files use) extensionless relative imports instead, which
-    // satisfies both `tsc --noEmit` and `drizzle-kit generate`.
+    // throws MODULE_NOT_FOUND. NodeNext mandates explicit `.js` extensions on relative ESM
+    // imports, which is exactly what breaks the loader. Bundler resolution allows (and this
+    // package's schema/*.ts files use) extensionless relative imports instead, which satisfies
+    // both `tsc --noEmit` and `drizzle-kit generate`. Other packages never see this convention:
+    // `main`/`types` point at the tsup-bundled `dist/`, which is NodeNext-clean (see index.ts).
     "module": "ESNext",
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    // tsup's isolated-declaration dts build (`pnpm run build`) doesn't pass a tsBuildInfoFile for
+    // this entry, which conflicts with the base config's composite/incremental project-references
+    // settings (TS5074). This package isn't referenced via TS project references, so both are safe
+    // to disable here.
+    "composite": false,
+    "incremental": false
   },
-  "include": ["schema/**/*.ts", "drizzle.config.ts"]
+  "include": ["schema/**/*.ts", "drizzle.config.ts", "index.ts", "client.ts", "scripts/**/*.ts"]
 }

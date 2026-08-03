@@ -13,7 +13,7 @@
 // requires-reference flags); that specialisation is deliberately out of scope here -- the task
 // for this package is the generic P1 mechanism itself, grounded in §T02-T03/§4.3/§8.3.
 import { sql } from "drizzle-orm";
-import { boolean, index, mysqlTable, smallint, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { boolean, index, json, mysqlTable, smallint, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 import { auditColumns, fkBigInt, fkBigIntNotNull, idPk, softDeleteColumns } from "./_shared";
 import { tenants } from "./tenant";
 
@@ -74,6 +74,14 @@ export const optionItems = mysqlTable(
     name: varchar("name", { length: 120 }).notNull(),
     nameUr: varchar("name_ur", { length: 120 }), // D15: bilingual English/Urdu
     description: varchar("description", { length: 255 }),
+    // 17-technical-blueprint.md §10.5's option_value DDL (group_label/min_permission/
+    // search_terms/meta_json) -- the generic P1.5/P1.6 columns every option_item needs, not the
+    // per-payment-method specialisation this file's header comment defers. Added once apps/api's
+    // OptionsRepository needed to preserve its existing OptionValue contract against real data.
+    groupLabel: varchar("group_label", { length: 64 }), // §10.5 P1.6: "Bank", "Cash", "Digital wallet"
+    minPermission: varchar("min_permission", { length: 96 }), // §10.5 P1.5: e.g. 'payment.method.bank:use'
+    searchTerms: varchar("search_terms", { length: 255 }), // §10.5 P1.6
+    metaJson: json("meta_json").$type<Record<string, unknown>>(), // §10.5: e.g. {"requires_reference": true}
     isEnabled: boolean("is_enabled").notNull().default(true),
     isDefault: boolean("is_default").notNull().default(false),
     isSystem: boolean("is_system").notNull().default(false), // seeded rows the application depends on
