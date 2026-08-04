@@ -106,6 +106,17 @@ export const RESOURCE_KEYS = [
   "payment_method",
   "expense",
   "expense_category",
+  // Wave 6: reporting registry, real audit-log reads, in-app notifications, dashboard aggregate
+  // endpoints -- the four "shared foundation" resources this wave lays for the reporting/audit/
+  // notifications follow-up agents to build their own modules against. See seed.ts's PERMISSIONS
+  // block for the resource x action grid seeded against each and
+  // docs/system-analysis/09-roles-permissions.md §I.4 for the role matrix "report"/"audit" follow
+  // (both have explicit rows there); "notification"/"dashboard" have no explicit §I.4 row -- see
+  // seed.ts's own comment on those two for the judgement call made.
+  "report",
+  "audit",
+  "notification",
+  "dashboard",
 ] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});

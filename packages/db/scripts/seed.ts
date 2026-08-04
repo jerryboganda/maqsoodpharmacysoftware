@@ -724,6 +724,104 @@ const PERMISSIONS: ReadonlyArray<{
     isSensitive: true,
     roles: ["accountant"],
   },
+
+  // -- Wave 6: reporting registry, real audit-log reads, in-app notifications, dashboard
+  // aggregates -- the four resources this wave's permissions.ts RESOURCE_KEYS addition lays down.
+  // These rows are appended to the SAME `PERMISSIONS` array block 1b already walks per-row
+  // (existence-checked by `code`, grants existence-checked by role) -- no new guard needed; that
+  // is exactly what "per-row idempotent from day one" buys a later wave.
+  //
+  // `report` -- 09 §I.4's explicit row (~line 1152-1179): "report view/print" -> owner(full)
+  // pharmacy_manager(full) shift_incharge/sales_officer/purchase_officer(◐ own-scope only)
+  // accountant(full) auditor(full) sys_admin(none). The ◐ "own scope" cells are collapsed to a
+  // plain grant here, same documented KNOWN GAP as every other ◐ cell in this file (row-level
+  // scope isn't modelled yet, see this block's own header comment above PERMISSIONS) -- the three
+  // "own scope" roles are still granted list/view, just not (yet) narrowed to their own records.
+  // "report export(logged)" -> owner/pharmacy_manager/accountant(full), auditor(◐ logged/partial),
+  // others none.
+  {
+    resource: "report",
+    action: "list",
+    name: "List available reports",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "report",
+    action: "view",
+    name: "Run / view a report",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "report",
+    action: "export",
+    name: "Export a report (logged)",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager", "accountant", "auditor"],
+  },
+
+  // `audit` -- 09 §I.4's explicit row: "audit.read" -> owner/sys_admin/auditor(full),
+  // pharmacy_manager/accountant(◐ partial), others none. There is no separate "read" verb in this
+  // file's ACTION_KEYS -- per this task's explicit instruction, split into "list" (browsing the
+  // trail) for the coarser action and "view" (single-event detail) for the finer one, both
+  // granted to the same role set (the §I.4 cell does not distinguish list vs. view granularity).
+  {
+    resource: "audit",
+    action: "list",
+    name: "Browse the audit trail",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "auditor", "pharmacy_manager", "accountant"],
+  },
+  {
+    resource: "audit",
+    action: "view",
+    name: "View a single audit event's detail",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "auditor", "pharmacy_manager", "accountant"],
+  },
+
+  // `notification` -- 09 §I.4 has NO explicit row for this (a Wave 6 addition, not part of the
+  // original blueprint's role matrix). Judgement call, per this task's explicit instruction:
+  // notifications are per-user data -- a user only ever lists/views/marks-read notifications
+  // addressed to THEM (recipientUserId) or broadcast to a role they hold (recipientRoleKey), so
+  // the resource+action pair itself is not privileged the way e.g. `identity.user:list` is; the
+  // real privilege boundary is "is this notification actually addressed to me", which the
+  // notifications module's service layer enforces per-row, not this permission grant. Granted to
+  // ALL 8 roles including sys_admin (unlike `dashboard` below) -- sys_admin is still a person who
+  // can receive e.g. a system-class notification and needs to be able to read/dismiss their own.
+  {
+    resource: "notification",
+    action: "list",
+    name: "List my notifications",
+    roles: ROLE_KEYS,
+  },
+  {
+    resource: "notification",
+    action: "view",
+    name: "View a notification's detail",
+    roles: ROLE_KEYS,
+  },
+  {
+    resource: "notification",
+    action: "edit",
+    name: "Mark my notification(s) read",
+    roles: ROLE_KEYS,
+  },
+
+  // `dashboard` -- 09 §I.4 has no explicit row either. Judgement call, per this task's explicit
+  // instruction: dashboard summary content is read-only OPERATIONAL/FINANCIAL visibility (stock
+  // levels, sales/purchase totals, AP/AR aging, expiry risk -- the same data `inventory.expiry:
+  // view_dashboard` already exposes a slice of), not system administration, so it follows that
+  // resource's exact existing role set (owner/pharmacy_manager/shift_incharge/sales_officer/
+  // purchase_officer/accountant/auditor) rather than ROLE_KEYS -- sys_admin is deliberately
+  // excluded, same reasoning §I.4 already gives sys_admin "none" on every operational/financial
+  // resource in this file (report, gl.ledger, sale.*, purchase.*, etc.) and reserves sys_admin for
+  // platform administration (identity.*, settings.*) instead.
+  {
+    resource: "dashboard",
+    action: "view_dashboard",
+    name: "View the operational dashboard",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
 ];
 
 // Mirrors apps/api/src/modules/settings/infrastructure/options.repository.ts's former in-memory

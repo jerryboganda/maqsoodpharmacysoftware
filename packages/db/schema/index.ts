@@ -7,6 +7,7 @@ export * from "./options";
 export * from "./catalog";
 export * from "./ledger";
 export * from "./audit";
+export * from "./notifications";
 export * from "./docflow";
 export * from "./parties";
 export * from "./payments";

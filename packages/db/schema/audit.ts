@@ -6,7 +6,7 @@
 // what/before/after" pattern everywhere, which is why this is a single generic table rather than
 // one log per module.
 import { sql } from "drizzle-orm";
-import { char, datetime, decimal, index, json, mysqlTable, varbinary, varchar } from "drizzle-orm/mysql-core";
+import { boolean, char, datetime, decimal, index, json, mysqlTable, varbinary, varchar } from "drizzle-orm/mysql-core";
 import { DOCUMENT_AMOUNT, fkBigInt, idPk, TIMESTAMP_FSP } from "./_shared";
 
 /**
@@ -59,6 +59,13 @@ export const auditLog = mysqlTable(
     ipAddress: varbinary("ip_address", { length: 16 }),
     machineName: varchar("machine_name", { length: 64 }),
     requestId: char("request_id", { length: 36 }), // correlates one user action across multiple audit rows
+    // Wave 6 addition. docs/system-analysis/18-api-plan.md flags a subset of audited actions as
+    // "security-class" (login, grant, revoke, setting.change, ...) that need to be filterable/
+    // reviewable independently of the full (much noisier) audit stream -- e.g. a dedicated
+    // "security events" view for the auditor role. Defaults false; the audit writer
+    // (apps/api/src/common/audit/audit.service.ts) sets it true for the security-class action set
+    // it hardcodes, everything else leaves it at the default.
+    isSensitive: boolean("is_sensitive").notNull().default(false),
   },
   (table) => ({
     // Append-only (§4.2): no updated_*/deleted_* columns, and the application's MySQL grant
