@@ -10,7 +10,7 @@ import { Quantity } from "@pharmacy/money";
 import type { Actor } from "../../../common/auth/actor.js";
 import { localToday } from "../../../common/dates/index.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
-import { toBusinessDate } from "./report-helpers.js";
+import { businessDateParam } from "./report-helpers.js";
 import { computeExpiryBuckets, DEFAULT_LOW_STOCK_THRESHOLD, getCashBankBalances, queryLowStockItems } from "./report-queries.js";
 
 @Injectable()
@@ -20,7 +20,7 @@ export class DashboardService {
   async summary(actor: Actor) {
     const db = getDb();
     const scope = await this.tenantContext.resolveScope(actor);
-    const today = toBusinessDate(localToday());
+    const today = businessDateParam(localToday());
 
     const [todaysSales] = await db
       .select({

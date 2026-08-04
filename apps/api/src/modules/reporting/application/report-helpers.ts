@@ -76,14 +76,48 @@ export function assertDateRange(dateFrom: string | undefined, dateTo: string | u
   }
 }
 
-/** A YYYY-MM-DD business-date string as a local-midnight `Date` for a Drizzle `date` column
- *  comparison -- mirrors expense.service.ts's identical `new Date(`${x}T00:00:00`)` convention
- *  (a date-time string with no zone suffix parses as LOCAL time per ECMA-262, so this is safe;
- *  see common/dates/business-date.ts's header comment for the trap this avoids: a bare
- *  `new Date("YYYY-MM-DD")`, or any `.toISOString().slice(0,10)` round-trip, is UTC and can roll
- *  to the wrong calendar day for Asia/Karachi local time). */
+/** A YYYY-MM-DD business-date string as a local-midnight `Date`, for LOCAL JS DATE ARITHMETIC
+ *  ONLY (`addDays`/`daysBetween` below) -- mirrors expense.service.ts's identical
+ *  `new Date(`${x}T00:00:00`)` convention (a date-time string with no zone suffix parses as LOCAL
+ *  time per ECMA-262, so this is safe; see common/dates/business-date.ts's header comment for the
+ *  trap this avoids: a bare `new Date("YYYY-MM-DD")`, or any `.toISOString().slice(0,10)`
+ *  round-trip, is UTC and can roll to the wrong calendar day for Asia/Karachi local time).
+ *
+ *  Do NOT use this for a Drizzle `gte`/`lte`/`eq` comparison against a `date()`-mode column --
+ *  see `businessDateParam` below for that case specifically; the two are NOT interchangeable
+ *  despite both nominally producing "a Date for the same calendar day". */
 export function toBusinessDate(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00`);
+}
+
+/** For a Drizzle `gte`/`lte`/`eq` comparison against a `date()`-mode column (e.g.
+ *  `sale_invoice.posting_date`) -- deliberately NOT `toBusinessDate` above, despite both taking a
+ *  `YYYY-MM-DD` string.
+ *
+ *  Real bug found live (CI-reproducible, and once found, also reproducible locally under
+ *  `TZ=UTC`): passing a JS `Date` object (e.g. `toBusinessDate(dateStr)`) into a Drizzle query
+ *  filter against a `date()`-mode column serializes that Date via `.toISOString()` --
+ *  `"2026-08-05T00:00:00.000Z"` -- as the literal SQL parameter (confirmed via `.toSQL()`
+ *  directly: `PARAMS: ["2026-08-05T00:00:00.000Z"]`). MySQL's implicit string-to-DATE coercion
+ *  does not correctly compare that ISO-with-"T"/"Z" string against a stored `DATE` value the way
+ *  it does a plain `"YYYY-MM-DD"` string -- the row silently never matches, even though the
+ *  SAME Date object read back from the SAME column (`.getTime()`) is byte-identical to the one
+ *  being compared against. Confirmed directly: passing the raw `YYYY-MM-DD` string instead
+ *  (bypassing `toBusinessDate` entirely) produces `PARAMS: ["2026-08-05"]` and matches correctly.
+ *
+ *  This is why `POST /reports/sales-summary/run` and `GET /dashboards/summary`'s "today" filters
+ *  could return zero rows for a real, correctly-posted invoice dated exactly "today" -- not a
+ *  timezone bug in the traditional sense (this reproduces under ANY server OS timezone, since the
+ *  broken serialization happens entirely inside Drizzle/mysql2, before the query ever leaves the
+ *  process), just a Date-vs-string parameter-typing mismatch for this specific column mode.
+ *
+ *  The `as unknown as Date` cast is deliberate: Drizzle's own TypeScript types require a `Date`
+ *  argument here (matching the column's SELECT-side type), but its ACTUAL runtime SQL parameter
+ *  serialization is exactly right for a plain string and exactly wrong for a real Date object --
+ *  the cast documents that this is intentionally fighting the type system to get the CORRECT
+ *  runtime behavior, not an oversight. */
+export function businessDateParam(dateStr: string): Date {
+  return dateStr as unknown as Date;
 }
 
 /** `dateStr` + `days` calendar days, as a YYYY-MM-DD string -- local-time arithmetic throughout

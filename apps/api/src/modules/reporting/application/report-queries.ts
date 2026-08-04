@@ -8,7 +8,7 @@ import { Money, Quantity } from "@pharmacy/money";
 
 import { localToday } from "../../../common/dates/index.js";
 import type { TenantBranchScope } from "../../inventory/infrastructure/tenant-context.service.js";
-import { addDays, toBusinessDate } from "./report-helpers.js";
+import { addDays, businessDateParam } from "./report-helpers.js";
 
 export const DEFAULT_LOW_STOCK_THRESHOLD = "20.0000"; // PharmacyDashboardPage.svelte's "< 20 units" convention -- see report-filters.ts's doc comment
 
@@ -97,7 +97,7 @@ export async function computeExpiryBuckets(scope: TenantBranchScope, itemId?: nu
     eq(stockLots.tenantId, scope.tenantId),
     eq(stockLots.branchId, scope.branchId),
     isNotNull(stockLots.expiryDate),
-    lte(stockLots.expiryDate, toBusinessDate(horizon)),
+    lte(stockLots.expiryDate, businessDateParam(horizon)),
   ];
   if (itemId !== undefined) conditions.push(eq(stockLots.itemId, itemId));
 

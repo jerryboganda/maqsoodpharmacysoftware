@@ -541,7 +541,32 @@ export class PurchaseInvoiceService {
   ): Promise<number> {
     const { line } = params;
     const batchKey = line.batchNo ?? BATCH_KEY_NONE;
-    const expiryKey = line.expiryDate ?? new Date(`${EXPIRY_KEY_NONE}T00:00:00`);
+    // Bug fix (root-caused live, via a temporary debug probe on the "raced" branch below --
+    // confirmed the duplicate-key error's OWN row could never be found by the "should be
+    // unreachable" locked re-select, proving this exact comparison was the culprit): passing a
+    // JS `Date` object into a Drizzle `eq()` comparison against a `date()`-mode GENERATED column
+    // (`stock_lot.expiry_key`, §T56) serializes that Date via `.toISOString()` -- an ISO string
+    // with "T"/"Z" -- as the literal SQL parameter, which MySQL's implicit string-to-DATE
+    // coercion does not reliably compare correctly against the generated column's own value. This
+    // is the EXACT same bug class already root-caused and fixed in
+    // reporting/application/report-helpers.ts's `businessDateParam` (see that function's own,
+    // much longer comment for the full mechanism and the `.toSQL()` proof) -- it also broke the
+    // `existing` pre-check (silently missing an already-committed lot every time, forcing a
+    // needless re-insert attempt on every subsequent purchase of the same item+batch+expiry) and
+    // the `raced` locked re-select in the catch block below (unable to find the very row whose
+    // duplicate-key violation just proved it exists, escalating a normal, already-handled race
+    // into a real 500). Fixed by comparing against a plain `YYYY-MM-DD` STRING instead -- MySQL
+    // compares that correctly against a DATE-typed generated column with no ambiguity. `line.
+    // expiryDate` is itself a `Date | null` (constructed via LOCAL-time parsing of an original
+    // "YYYY-MM-DD" string, computeLine's own convention) -- reading its LOCAL calendar fields
+    // back out is a safe, OS-timezone-independent round-trip of that same local-time construction
+    // (write-local + read-local is symmetric regardless of server OS timezone; only a write-local-
+    // then-read-UTC mismatch, or vice versa, is actually broken -- see business-date.ts's header
+    // comment for that distinction).
+    const expiryKeyStr = line.expiryDate
+      ? `${line.expiryDate.getFullYear()}-${String(line.expiryDate.getMonth() + 1).padStart(2, "0")}-${String(line.expiryDate.getDate()).padStart(2, "0")}`
+      : EXPIRY_KEY_NONE;
+    const expiryKey = expiryKeyStr as unknown as Date; // see comment above -- deliberate, matches businessDateParam's own escape hatch
 
     const [existing] = await tx
       .select({ stockLotId: stockLots.stockLotId })

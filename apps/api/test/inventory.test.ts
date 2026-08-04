@@ -35,6 +35,7 @@ import {
 } from "@pharmacy/db";
 import { Quantity } from "@pharmacy/money";
 
+import { localToday } from "../src/common/dates/index.js";
 import { createTestUser, loginAsOwner, type LoggedInUser } from "./support/auth.js";
 import { createTestApp, newIdempotencyKey, request, type TestApp } from "./support/test-app.js";
 
@@ -245,8 +246,19 @@ async function currentAvgUnitCost(itemId: number): Promise<string> {
  *  matches `localToday()`'s own local-calendar-field convention (common/dates/business-date.ts),
  *  so the expiry-dashboard bucket math the server computes against its own `localToday()` lines up
  *  exactly with what this helper hands the purchase invoice as the lot's `expiryDate`. */
+/** Bug fix (found live, same class as common/dates/business-date.ts's own header comment):
+ *  this originally anchored on `new Date()` -- the server PROCESS's own OS-local "now" -- then
+ *  read OS-local calendar fields back out. That's a DIFFERENT reference point than the real
+ *  application code's own `asOf = new Date(\`${localToday()}T00:00:00\`)` (stock-query.service.ts),
+ *  which is correctly pinned to the Asia/Karachi business date regardless of server OS timezone.
+ *  On any server whose OS timezone isn't Asia/Karachi (CI's ubuntu-latest runner defaults to UTC),
+ *  the two could disagree on "today" by a day, throwing every computed expiry bucket off by
+ *  exactly one day. Anchoring on `localToday()` here instead matches the application's own
+ *  reference point exactly; the day-arithmetic itself (setDate + read local fields back) is safe
+ *  regardless of OS timezone once given a correct starting point (add/subtract-then-read-same-
+ *  fields is a symmetric round-trip, unlike computing "today" from scratch). */
 function daysFromToday(days: number): string {
-  const d = new Date();
+  const d = new Date(`${localToday()}T00:00:00`);
   d.setDate(d.getDate() + days);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");

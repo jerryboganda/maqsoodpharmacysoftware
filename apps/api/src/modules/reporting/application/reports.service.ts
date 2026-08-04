@@ -40,7 +40,7 @@ import {
   SalesSummaryFiltersSchema,
   StockValuationFiltersSchema,
 } from "./report-filters.js";
-import { assertDateRange, paginate, resolvePage, toBusinessDate, toDateOnly, type Page } from "./report-helpers.js";
+import { assertDateRange, paginate, resolvePage, businessDateParam, toDateOnly, type Page } from "./report-helpers.js";
 import { computeExpiryBuckets, DEFAULT_LOW_STOCK_THRESHOLD, queryLowStockItems } from "./report-queries.js";
 import { REPORT_DEFINITIONS } from "./report-registry.js";
 
@@ -112,8 +112,8 @@ export class ReportsService {
 
     if (f.groupBy === "item") {
       const conditions = [eq(saleInvoices.tenantId, scope.tenantId), eq(saleInvoices.branchId, scope.branchId), eq(saleInvoices.status, "posted")];
-      if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, toBusinessDate(f.dateFrom)));
-      if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, toBusinessDate(f.dateTo)));
+      if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, businessDateParam(f.dateFrom)));
+      if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, businessDateParam(f.dateTo)));
       if (f.customerId !== undefined) conditions.push(eq(saleInvoices.customerId, f.customerId));
       if (f.itemId !== undefined) conditions.push(eq(saleInvoiceLines.itemId, f.itemId));
 
@@ -148,8 +148,8 @@ export class ReportsService {
 
     if (f.groupBy === "customer") {
       const conditions = [eq(saleInvoices.tenantId, scope.tenantId), eq(saleInvoices.branchId, scope.branchId), eq(saleInvoices.status, "posted")];
-      if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, toBusinessDate(f.dateFrom)));
-      if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, toBusinessDate(f.dateTo)));
+      if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, businessDateParam(f.dateFrom)));
+      if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, businessDateParam(f.dateTo)));
       if (f.customerId !== undefined) conditions.push(eq(saleInvoices.customerId, f.customerId));
 
       const rows = await db
@@ -180,8 +180,8 @@ export class ReportsService {
 
     // groupBy === "date" (default)
     const conditions = [eq(saleInvoices.tenantId, scope.tenantId), eq(saleInvoices.branchId, scope.branchId), eq(saleInvoices.status, "posted")];
-    if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, toBusinessDate(f.dateFrom)));
-    if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, toBusinessDate(f.dateTo)));
+    if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, businessDateParam(f.dateFrom)));
+    if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, businessDateParam(f.dateTo)));
     if (f.customerId !== undefined) conditions.push(eq(saleInvoices.customerId, f.customerId));
 
     const rows = await db
@@ -215,8 +215,8 @@ export class ReportsService {
 
     if (f.groupBy === "item") {
       const conditions = [eq(purchaseInvoices.tenantId, scope.tenantId), eq(purchaseInvoices.branchId, scope.branchId), eq(purchaseInvoices.status, "posted")];
-      if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, toBusinessDate(f.dateFrom)));
-      if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, toBusinessDate(f.dateTo)));
+      if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, businessDateParam(f.dateFrom)));
+      if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, businessDateParam(f.dateTo)));
       if (f.supplierId !== undefined) conditions.push(eq(purchaseInvoices.supplierId, f.supplierId));
       if (f.itemId !== undefined) conditions.push(eq(purchaseInvoiceLines.itemId, f.itemId));
 
@@ -251,8 +251,8 @@ export class ReportsService {
 
     if (f.groupBy === "supplier") {
       const conditions = [eq(purchaseInvoices.tenantId, scope.tenantId), eq(purchaseInvoices.branchId, scope.branchId), eq(purchaseInvoices.status, "posted")];
-      if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, toBusinessDate(f.dateFrom)));
-      if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, toBusinessDate(f.dateTo)));
+      if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, businessDateParam(f.dateFrom)));
+      if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, businessDateParam(f.dateTo)));
       if (f.supplierId !== undefined) conditions.push(eq(purchaseInvoices.supplierId, f.supplierId));
 
       const rows = await db
@@ -283,8 +283,8 @@ export class ReportsService {
 
     // groupBy === "date" (default)
     const conditions = [eq(purchaseInvoices.tenantId, scope.tenantId), eq(purchaseInvoices.branchId, scope.branchId), eq(purchaseInvoices.status, "posted")];
-    if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, toBusinessDate(f.dateFrom)));
-    if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, toBusinessDate(f.dateTo)));
+    if (f.dateFrom !== undefined) conditions.push(gte(purchaseInvoices.postingDate, businessDateParam(f.dateFrom)));
+    if (f.dateTo !== undefined) conditions.push(lte(purchaseInvoices.postingDate, businessDateParam(f.dateTo)));
     if (f.supplierId !== undefined) conditions.push(eq(purchaseInvoices.supplierId, f.supplierId));
 
     const rows = await db
