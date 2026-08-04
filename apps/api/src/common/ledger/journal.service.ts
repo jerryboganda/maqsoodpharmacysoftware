@@ -38,10 +38,28 @@ export interface PostJournalInput {
   readonly entryNo: string; // the source document's own doc number -- one journal per document
   readonly entryDate: string; // YYYY-MM-DD
   readonly documentTypeCode: string; // 'SV' | 'SR' | 'PV' | 'PR' | 'ADJ' | ...
-  readonly sourceDocumentId: number;
+  // Optional (added by the `accounting` module for POST /cash-bank/transfers -- "CBT" has no
+  // dedicated header table, so there is no row id to reference; ledger.ts's own header comment
+  // already anticipated NULL here for exactly this shape: "the invoice/payment/expense/
+  // adjustment that caused it; NULL only for manual JVs" -- extended to cover any document type
+  // with no header row, not just JV. MySQL UNIQUE indexes (uk_journal_source) permit multiple
+  // NULLs, so this cannot collide across transfers.) Every existing caller always supplies a
+  // real id, so this stays a required `number` for them in practice; only the type widened.
+  readonly sourceDocumentId?: number;
   readonly description: string;
   readonly legs: readonly JournalLegInput[];
   readonly postedBy: number;
+  // Reversal fields (added by the `accounting` module, apps/api/src/modules/accounting/
+  // application/journal-entry.service.ts, for POST /gl/journal-entries/{id}/reverse -- ledger.ts's
+  // journal_entry table has always had reversalSeq/reversalOfJournalId/reversalReason columns,
+  // but nothing wrote them until this endpoint existed). All optional and default to the exact
+  // same values the unparameterised insert already produced (reversalSeq 0 via the column's own
+  // DB default, reversalOfJournalId/reversalReason null), so every existing caller
+  // (purchase-invoice.service.ts, purchase-return.service.ts, sale-invoices.service.ts,
+  // sale-returns.service.ts, stock-adjustment.service.ts) is unaffected.
+  readonly reversalSeq?: number;
+  readonly reversalOfJournalId?: number;
+  readonly reversalReason?: string;
 }
 
 @Injectable()
@@ -88,7 +106,7 @@ export class JournalService {
       entryNo: input.entryNo,
       entryDate: new Date(`${input.entryDate}T00:00:00`),
       documentTypeCode: input.documentTypeCode,
-      sourceDocumentId: input.sourceDocumentId,
+      sourceDocumentId: input.sourceDocumentId ?? null,
       description: input.description,
       totalDebit: totalDebit.toDb(),
       totalCredit: totalCredit.toDb(),
@@ -96,6 +114,9 @@ export class JournalService {
       status: "posted",
       postedAt: now,
       postedBy: input.postedBy,
+      reversalSeq: input.reversalSeq ?? 0,
+      reversalOfJournalId: input.reversalOfJournalId ?? null,
+      reversalReason: input.reversalReason ?? null,
       createdBy: input.postedBy,
     });
     const [entry] = await tx

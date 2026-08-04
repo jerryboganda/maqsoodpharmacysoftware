@@ -14,10 +14,13 @@ import { IdempotencyInterceptor } from "./common/idempotency/idempotency.interce
 import { IdempotencyStore, MySqlIdempotencyStore } from "./common/idempotency/idempotency-store.js";
 import { ZodValidationPipe } from "./common/validation/zod-validation.pipe.js";
 import { DocflowModule } from "./common/docflow/index.js";
+import { AccountingModule } from "./modules/accounting/index.js";
 import { AuthModule } from "./modules/auth/index.js";
 import { CatalogModule } from "./modules/catalog/index.js";
+import { ExpensesModule } from "./modules/expenses/index.js";
 import { IdentityModule } from "./modules/identity/index.js";
 import { InventoryModule } from "./modules/inventory/index.js";
+import { PaymentsModule } from "./modules/payments/index.js";
 import { PurchasingModule } from "./modules/purchasing/index.js";
 import { SalesModule } from "./modules/sales/index.js";
 import { SettingsModule } from "./modules/settings/index.js";
@@ -32,6 +35,11 @@ import { SettingsModule } from "./modules/settings/index.js";
     InventoryModule,
     PurchasingModule,
     SalesModule,
+    // Wave 5 "lay the shared foundation" skeletons -- empty until the three follow-up agents
+    // (accounting, payments, expenses) build against them; see each module's own header comment.
+    AccountingModule,
+    PaymentsModule,
+    ExpensesModule,
   ],
   providers: [
     // Order matters: SessionGuard attaches `request.actor` before PermissionGuard reads it.

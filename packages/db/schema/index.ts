@@ -10,6 +10,8 @@ export * from "./audit";
 export * from "./docflow";
 export * from "./parties";
 export * from "./payments";
+export * from "./expenses";
+export * from "./accounting";
 export * from "./inventory";
 export * from "./purchasing";
 export * from "./sales";

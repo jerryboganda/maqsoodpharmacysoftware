@@ -22,6 +22,14 @@ export const ACTION_KEYS = [
   // retirement, not a document lifecycle transition).
   "close",
   "cancel",
+  // Wave 5 (GL/payments/expenses foundation): distinct from "cancel" -- cancel voids a document
+  // before/without a GL impact being relied on elsewhere, reverse writes a compensating balanced
+  // journal entry against one that already posted (journal_entry/journal_line are append-only,
+  // §T91/§T92 ledger.ts -- corrections are audited reversals, never an in-place edit or delete).
+  // Several Wave 5 endpoints (gl.voucher, payment, expense, cash_bank) need to grant this
+  // independently of "cancel" and "post" per 18-api-plan.md Part 5's reversal endpoints
+  // (`/payments/{id}/reverse`, `/expenses/{id}/reverse`, `/gl/journal-entries/{id}/reverse`).
+  "reverse",
   // `identity.user:edit` folds activate/deactivate into "edit" (see seed.ts's comment on that
   // row), but a party master (e.g. `purchase.supplier`) wants a permission distinct from ordinary
   // field edits for the same reason `identity.user_role:edit` is split from `identity.user:edit`
@@ -85,6 +93,19 @@ export const RESOURCE_KEYS = [
   "sale.customer",
   "sale.cash",
   "sale.return",
+  // Wave 5: GL/chart-of-accounts, manual accounting vouchers, payments, cash-bank, expenses --
+  // this file's own header comment predicted "gl.voucher" as a future example. See seed.ts's
+  // PERMISSIONS block for the resource x action grid these resource keys are actually seeded
+  // against, and docs/system-analysis/09-roles-permissions.md §I.4 for the role matrix each row
+  // follows.
+  "gl.account",
+  "gl.ledger",
+  "gl.voucher",
+  "cash_bank",
+  "payment",
+  "payment_method",
+  "expense",
+  "expense_category",
 ] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});

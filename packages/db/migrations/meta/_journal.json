@@ -36,6 +36,20 @@
       "when": 1785833579309,
       "tag": "0004_new_butterfly",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1785843059032,
+      "tag": "0005_mighty_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1785844256114,
+      "tag": "0006_fantastic_sir_ram",
+      "breakpoints": true
     }
   ]
 }
