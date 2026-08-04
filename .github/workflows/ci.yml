@@ -53,9 +53,6 @@ jobs:
       - name: Build
         run: pnpm turbo run build
 
-      - name: Test
-        run: pnpm turbo run test
-
       - name: Apply DB migrations against a real MySQL instance
         working-directory: packages/db
         env:
@@ -66,7 +63,19 @@ jobs:
           DB_NAME: pharmacy_platform_ci
         run: pnpm run migrate
 
+      # Moved ahead of "Test" (was previously after it): apps/api's own real integration tests
+      # (test/support/test-app.ts) run against this exact same migrated+seeded database -- they
+      # need the seeded dev.owner fixture user and every permission/doc-type/option-list row to
+      # already exist. Runs seed TWICE: the second run must be a no-op (see seed.ts's header
+      # comment), not a duplicate-row failure -- a real regression this CI run can catch that a
+      # single local run wouldn't. Captures dev.owner's freshly-minted password from the FIRST
+      # run's own stdout (seed.ts prints "=== DEV OWNER PASSWORD (save this): ... ===" only when
+      # the dev tenant doesn't already exist yet, i.e. exactly once here, on a fresh CI database)
+      # into a step output so the Test step below can log in as a real user -- apps/api's own
+      # test/support/auth.ts has no other way to know this database's dev.owner password, since
+      # it's randomly generated per-database by design (see seed.ts).
       - name: Seed dev fixture data and verify idempotency
+        id: seed
         working-directory: packages/db
         env:
           DB_HOST: 127.0.0.1
@@ -74,7 +83,25 @@ jobs:
           DB_USER: root
           DB_PASSWORD: ${{ env.CI_DB_PASSWORD }}
           DB_NAME: pharmacy_platform_ci
-        # Runs twice: the second run must be a no-op (see seed.ts's header comment), not a
-        # duplicate-row failure -- this is a real regression the CI run can catch that a single
-        # local run wouldn't.
-        run: pnpm run seed && pnpm run seed
+        run: |
+          set -o pipefail
+          pnpm run seed | tee /tmp/seed-output.txt
+          pnpm run seed
+          password=$(grep -oP '(?<=DEV OWNER PASSWORD \(save this\): )[^ ]+' /tmp/seed-output.txt)
+          if [ -z "$password" ]; then
+            echo "::error::Could not find the dev.owner password line in seed output -- apps/api's integration tests have no way to authenticate."
+            exit 1
+          fi
+          echo "::add-mask::$password"
+          echo "dev_owner_password=$password" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ${{ env.CI_DB_PASSWORD }}
+          DB_NAME: pharmacy_platform_ci
+          TEST_DEV_OWNER_USERNAME: dev.owner
+          TEST_DEV_OWNER_PASSWORD: ${{ steps.seed.outputs.dev_owner_password }}
+        run: pnpm turbo run test
