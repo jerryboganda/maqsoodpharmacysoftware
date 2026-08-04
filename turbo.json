@@ -13,7 +13,15 @@
       "dependsOn": ["^build"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      // apps/api's real integration tests connect to a real MySQL instance and log in as a real
+      // seeded user -- these must reach the task's actual child process. Turbo does not pass
+      // arbitrary env vars through to a task by default (only vars declared here, plus whatever
+      // `globalEnv` would add) when running under CI's stricter env-var handling -- found live:
+      // `packages/db`'s migrate/seed steps (invoked directly via `pnpm run`, never through turbo)
+      // saw DB_PASSWORD fine, but this task (invoked via `pnpm turbo run test`) threw "Missing
+      // required environment variable: DB_PASSWORD" until these were declared here.
+      "env": ["DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME", "TEST_DEV_OWNER_USERNAME", "TEST_DEV_OWNER_PASSWORD"]
     },
     "typecheck": {
       "dependsOn": ["^build"]
