@@ -554,8 +554,28 @@ export class PurchaseInvoiceService {
     // this insert -- uk_stock_lot_identity (catalog.ts) then throws a raw ER_DUP_ENTRY. Treat
     // that as "the other transaction won the race" rather than an unhandled error: re-select
     // (locked, since the other side's insert may have only just committed) and return its row.
+    //
+    // Bug fix (found live in CI only, unreproducible locally against MANY variants -- a
+    // long-lived local dev DB, a freshly migrated+seeded DB, direct `vitest run`, and CI's own
+    // `pnpm turbo run test` invocation, all on Windows): the ORIGINAL version of this method
+    // inserted, then re-SELECTed the new row by its business key (itemId/batchKey/expiryKey,
+    // the latter two being generated columns) to learn the new stockLotId, on the assumption a
+    // same-transaction SELECT always sees its own just-inserted row. On GitHub Actions'
+    // ubuntu-latest runner against the ephemeral MySQL 8.4 service container specifically, that
+    // re-select came back empty on every single purchase-invoice creation (a "should be
+    // unreachable" defensive throw was reached every time) -- environment-specific enough
+    // (Docker service container network path, connection pool timing under that setup, or some
+    // other CI-only factor) that root-causing the exact trigger further wasn't worth chasing
+    // when there's a strictly more robust fix available regardless of the cause: mysql2's own
+    // INSERT result already returns the new row's real auto-increment id directly (`result.
+    // insertId`, the exact same
+    // pattern accounting/application/journal-entry.service.ts's own manual-voucher insert already
+    // relies on), reading that instead of re-querying eliminates the entire class of "does a
+    // same-transaction read see this transaction's own write" risk -- there is no query to
+    // mis-match, no generated-column timing to depend on, no connection-routing assumption at
+    // all: the id comes back as part of the INSERT statement's own atomic response.
     try {
-      await tx.insert(stockLots).values({
+      const [result] = await tx.insert(stockLots).values({
         tenantId: params.tenantId,
         branchId: params.branchId,
         itemId: line.itemId,
@@ -572,6 +592,7 @@ export class PurchaseInvoiceService {
         receiptUnitCost: line.unitCostIn,
         createdSource: "api",
       });
+      return Number(result.insertId);
     } catch (error) {
       if (!isDuplicateKeyError(error, "uk_stock_lot_identity")) throw error;
       const [raced] = await tx
@@ -582,13 +603,6 @@ export class PurchaseInvoiceService {
       if (!raced) throw error; // unreachable -- the duplicate-key error proves a row exists
       return raced.stockLotId;
     }
-
-    const [created] = await tx
-      .select({ stockLotId: stockLots.stockLotId })
-      .from(stockLots)
-      .where(and(eq(stockLots.itemId, line.itemId), eq(stockLots.batchKey, batchKey), eq(stockLots.expiryKey, expiryKey)));
-    if (!created) throw new Error("stock_lot insert did not land"); // unreachable; defensive
-    return created.stockLotId;
   }
 }
 
