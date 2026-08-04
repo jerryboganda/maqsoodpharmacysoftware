@@ -11,6 +11,10 @@ export interface LoggedInUser {
   username: string;
   roles: string[];
   token: string;
+  /** The raw password this user last logged in with -- exposed so tests can prove negative cases
+   *  (e.g. "the OLD password no longer works after a change", "a correct password is still
+   *  rejected while locked") against a real, known credential instead of an arbitrary string. */
+  password: string;
 }
 
 interface LoginResponseBody {
@@ -40,7 +44,7 @@ export async function loginAsOwner(testApp: TestApp): Promise<LoggedInUser> {
         `is the test database migrated+seeded? Body: ${JSON.stringify(res.json)}`,
     );
   }
-  return { userId: Number(res.json.userId), username: res.json.username, roles: res.json.roles, token: res.json.token };
+  return { userId: Number(res.json.userId), username: res.json.username, roles: res.json.roles, token: res.json.token, password };
 }
 
 let userCounter = 0;
@@ -79,5 +83,11 @@ export async function createTestUser(testApp: TestApp, ownerToken: string, roles
   if (loginRes.status !== 200) {
     throw new Error(`createTestUser: login as freshly-created user "${username}" returned ${loginRes.status}. Body: ${JSON.stringify(loginRes.json)}`);
   }
-  return { userId: Number(loginRes.json.userId), username: loginRes.json.username, roles: loginRes.json.roles, token: loginRes.json.token };
+  return {
+    userId: Number(loginRes.json.userId),
+    username: loginRes.json.username,
+    roles: loginRes.json.roles,
+    token: loginRes.json.token,
+    password: createRes.json.temporaryPassword,
+  };
 }
