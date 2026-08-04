@@ -238,6 +238,75 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "pharmacy_manager", "purchase_officer", "accountant", "auditor"],
   },
 
+  // -- Purchase orders (commitment/intent documents -- never touch stock or the GL, see
+  // purchase-order.service.ts's header comment). list/view/create mirror `purchase`/
+  // `purchase.supplier`'s existing role sets exactly; `approve` mirrors
+  // `inventory.adjustment:approve` exactly (owner/pharmacy_manager only, isSensitive) per this
+  // task's explicit instruction. `close`/`cancel` are given no such explicit precedent to mirror
+  // -- granted to the same operational role set as `create` (the people who actually manage a
+  // PO's lifecycle day to day), pending an owner sign-off on the real matrix, same fallback
+  // convention catalog.item:edit/:deactivate above already documents.
+  {
+    resource: "purchase.order",
+    action: "list",
+    name: "List purchase orders",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.order",
+    action: "view",
+    name: "View a purchase order",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.order",
+    action: "create",
+    name: "Create a purchase order",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+  {
+    resource: "purchase.order",
+    action: "approve",
+    name: "Approve a purchase order",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "purchase.order",
+    action: "close",
+    name: "Close a purchase order",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+  {
+    resource: "purchase.order",
+    action: "cancel",
+    name: "Cancel a purchase order",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+
+  // -- Purchase returns (goods back to a supplier -- touches stock AND the GL, same seriousness
+  // as `purchase`, just the reverse direction; see purchase-return.service.ts's header comment).
+  // Per this task's explicit instruction: purchase_officer/pharmacy_manager/shift_incharge
+  // create; owner/pharmacy_manager/purchase_officer/accountant/auditor view (list mirrors view).
+  {
+    resource: "purchase.return",
+    action: "list",
+    name: "List purchase returns",
+    roles: ["owner", "pharmacy_manager", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.return",
+    action: "view",
+    name: "View a purchase return",
+    roles: ["owner", "pharmacy_manager", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.return",
+    action: "create",
+    name: "Create + post a purchase return",
+    roles: ["purchase_officer", "pharmacy_manager", "shift_incharge"],
+  },
+
   // -- Sales (cash-only this increment, 00b D5) --
   {
     resource: "sale.customer",
@@ -294,6 +363,30 @@ const PERMISSIONS: ReadonlyArray<{
     action: "create",
     name: "Create a cash sale",
     roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+
+  // -- Sale returns (goods back from a customer -- touches stock AND the GL, same seriousness as
+  // `sale.cash`, just the reverse direction; see sale-returns.service.ts's header comment).
+  // Role sets mirror `purchase.return`'s exact pattern (this task's explicit instruction),
+  // swapped onto the sales-side role names: sales_officer/pharmacy_manager/shift_incharge create;
+  // owner/pharmacy_manager/sales_officer/accountant/auditor view (list mirrors view).
+  {
+    resource: "sale.return",
+    action: "list",
+    name: "List sale returns",
+    roles: ["owner", "pharmacy_manager", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.return",
+    action: "view",
+    name: "View a sale return",
+    roles: ["owner", "pharmacy_manager", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.return",
+    action: "create",
+    name: "Create + post a sale return",
+    roles: ["sales_officer", "pharmacy_manager", "shift_incharge"],
   },
 ];
 

@@ -17,6 +17,11 @@ export const ACTION_KEYS = [
   "post",
   "unpost",
   "approve",
+  // Purchase-order terminal-state transitions (`purchase.order:close`/`:cancel`) -- distinct
+  // verbs from `delete` (never a hard delete, N-3) and from `deactivate` (a master-data
+  // retirement, not a document lifecycle transition).
+  "close",
+  "cancel",
   // `identity.user:edit` folds activate/deactivate into "edit" (see seed.ts's comment on that
   // row), but a party master (e.g. `purchase.supplier`) wants a permission distinct from ordinary
   // field edits for the same reason `identity.user_role:edit` is split from `identity.user:edit`
@@ -52,8 +57,11 @@ export const RESOURCE_KEYS = [
   "inventory.stock",
   "purchase",
   "purchase.supplier",
+  "purchase.order",
+  "purchase.return",
   "sale.customer",
   "sale.cash",
+  "sale.return",
 ] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});

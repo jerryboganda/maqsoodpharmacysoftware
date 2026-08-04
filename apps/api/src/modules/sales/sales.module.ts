@@ -7,14 +7,16 @@ import { TenantContextService } from "../inventory/infrastructure/tenant-context
 import { CustomersController } from "./api/customers.controller.js";
 import { LookupsController } from "./api/lookups.controller.js";
 import { SaleInvoicesController } from "./api/sale-invoices.controller.js";
+import { SaleReturnsController } from "./api/sale-returns.controller.js";
 import { CustomersService } from "./application/customers.service.js";
 import { LookupsService } from "./application/lookups.service.js";
 import { SaleInvoicesService } from "./application/sale-invoices.service.js";
+import { SaleReturnsService } from "./application/sale-returns.service.js";
 
 @Module({
   imports: [InventoryModule],
-  controllers: [CustomersController, SaleInvoicesController, LookupsController],
-  providers: [CustomersService, SaleInvoicesService, LookupsService, TenantContextService],
-  exports: [SaleInvoicesService, CustomersService],
+  controllers: [CustomersController, SaleInvoicesController, SaleReturnsController, LookupsController],
+  providers: [CustomersService, SaleInvoicesService, SaleReturnsService, LookupsService, TenantContextService],
+  exports: [SaleInvoicesService, SaleReturnsService, CustomersService],
 })
 export class SalesModule {}
