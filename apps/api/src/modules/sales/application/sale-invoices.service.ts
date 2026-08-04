@@ -220,6 +220,7 @@ export class SaleInvoicesService {
           branchId: branchId,
           itemId: item.itemId,
           qtyRequired: qty.toDb(),
+          asOfDate: dto.documentDate,
         });
 
         // B-6 RowGroup: a requested line spanning multiple lots becomes multiple DB lines with

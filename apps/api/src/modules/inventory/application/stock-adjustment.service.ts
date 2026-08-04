@@ -17,7 +17,8 @@ import {
 } from "@pharmacy/db";
 
 import type { Actor } from "../../../common/auth/actor.js";
-import type { Tx } from "../../../common/db/index.js";
+import type { DbOrTx, Tx } from "../../../common/db/index.js";
+import { localToday } from "../../../common/dates/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService } from "../../../common/docflow/index.js";
 import type { JournalLegInput } from "../../../common/docflow/index.js";
 import { BusinessRuleException } from "../../../common/errors/index.js";
@@ -44,6 +45,11 @@ export interface CreateAdjustmentInput {
   readonly updateAvgCost?: boolean | undefined;
   readonly notes?: string | undefined;
   readonly lines: readonly CreateAdjustmentLineInput[];
+  /** Set by `StockTakeService.generateAdjustments()` -- links the resulting document back to the
+   *  count session that produced it (`stock_adjustment.stock_take_id`, a bare soft reference,
+   *  see inventory.ts's comment on that column). `undefined` for every ordinary, manually-created
+   *  adjustment (the public `POST /stock-adjustments` DTO never sets this). */
+  readonly stockTakeId?: number | undefined;
 }
 
 @Injectable()
@@ -66,12 +72,21 @@ export class StockAdjustmentService {
    * guarantees cancelled documents keep their numbers, so a draft that never posts simply leaves
    * a used number -- an audit fact, not a gap to plug. Revisit with the full draft lifecycle
    * (edit/cancel endpoints).
+   *
+   * `externalTx` -- optional, for `StockTakeService.generateAdjustments()`: when supplied, this
+   * method runs its body against the CALLER's already-open transaction instead of opening its
+   * own, and the final read-back (`getById`) reads through that same handle so it observes its
+   * own not-yet-committed insert (a fresh `getDb()` connection could not). This is what lets a
+   * caller compose `create()` + `post()` -- for an increase AND a decrease document -- inside one
+   * outer transaction (18-api-plan.md §2.6 generate-adjustments: "both documents in one
+   * transaction, or neither") without this service reimplementing any posting logic itself.
+   * `undefined` (every other caller, e.g. the controller) preserves the original behaviour
+   * exactly: open one transaction here, commit, read back afterwards.
    */
-  async create(scope: TenantBranchScope, actor: Actor, input: CreateAdjustmentInput) {
-    const db = getDb();
+  async create(scope: TenantBranchScope, actor: Actor, input: CreateAdjustmentInput, externalTx?: Tx) {
     const actorId = Number(actor.userId);
 
-    const created = await db.transaction(async (tx) => {
+    const runCreate = async (tx: Tx) => {
       const reason = await this.loadReason(tx, scope.tenantId, input.adjustmentReasonId, input.direction);
 
       // Drafts still carry NOT NULL posting_date/fiscal_period_id (pack DOC): stamp the document
@@ -132,6 +147,7 @@ export class StockAdjustmentService {
         updateAvgCost: input.updateAvgCost ?? false,
         requiresApproval: reason.requiresApproval,
         notes: input.notes ?? null,
+        stockTakeId: input.stockTakeId ?? null,
         createdBy: actorId,
         createdSource: "api",
       });
@@ -148,9 +164,10 @@ export class StockAdjustmentService {
         .values(lineRows.map((row) => ({ ...row, stockAdjustmentId: header.stockAdjustmentId })));
 
       return header.stockAdjustmentId;
-    });
+    };
 
-    return this.getById(scope, created);
+    const created = externalTx ? await runCreate(externalTx) : await getDb().transaction(runCreate);
+    return this.getById(scope, created, externalTx ?? getDb());
   }
 
   /**
@@ -159,13 +176,16 @@ export class StockAdjustmentService {
    * the header opts in, re-average the item's cost BEFORE the movement -- CostingService reads
    * the pre-receipt balance, see its C-2 comment), then write the balanced journal:
    * increase -> Dr 1200 Inventory / Cr reason GL; decrease -> Dr reason GL / Cr 1200 Inventory.
+   *
+   * `externalTx` -- same contract as `create()`'s (see its doc comment): supplied only by
+   * `StockTakeService.generateAdjustments()` so create+post for both the increase and decrease
+   * documents share one outer transaction.
    */
-  async post(scope: TenantBranchScope, actor: Actor, stockAdjustmentId: number, postingDate?: string) {
-    const db = getDb();
+  async post(scope: TenantBranchScope, actor: Actor, stockAdjustmentId: number, postingDate?: string, externalTx?: Tx) {
     const actorId = Number(actor.userId);
     const effectivePostingDate = postingDate ?? localToday();
 
-    await db.transaction(async (tx) => {
+    const runPost = async (tx: Tx) => {
       const [header] = await tx
         .select()
         .from(stockAdjustments)
@@ -313,9 +333,14 @@ export class StockAdjustmentService {
           updatedBy: actorId,
         })
         .where(eq(stockAdjustments.stockAdjustmentId, stockAdjustmentId));
-    });
+    };
 
-    return this.getById(scope, stockAdjustmentId);
+    if (externalTx) {
+      await runPost(externalTx);
+    } else {
+      await getDb().transaction(runPost);
+    }
+    return this.getById(scope, stockAdjustmentId, externalTx ?? getDb());
   }
 
   /**
@@ -415,9 +440,16 @@ export class StockAdjustmentService {
     };
   }
 
-  /** GET /stock-adjustments/:id -- header with lines. */
-  async getById(scope: TenantBranchScope, stockAdjustmentId: number) {
-    const db = getDb();
+  /**
+   * GET /stock-adjustments/:id -- header with lines.
+   *
+   * `dbOrTx` defaults to the pool (`getDb()`) for ordinary reads. `create()`/`post()` pass their
+   * own `externalTx` through here when one was supplied, so this read observes that transaction's
+   * own not-yet-committed write instead of racing it via a separate connection (see `create()`'s
+   * doc comment for why that distinction matters).
+   */
+  async getById(scope: TenantBranchScope, stockAdjustmentId: number, dbOrTx: DbOrTx = getDb()) {
+    const db = dbOrTx;
     const [header] = await db
       .select()
       .from(stockAdjustments)
@@ -506,13 +538,4 @@ export class StockAdjustmentService {
     }
     return gl.glAccountId;
   }
-}
-
-/** Today as a `YYYY-MM-DD` business date in server-local time (Asia/Karachi in deployment, §3.6). */
-function localToday(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }

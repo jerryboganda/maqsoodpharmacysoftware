@@ -38,6 +38,26 @@ export const ACTION_KEYS = [
   "reprice",
   "discount",
   "override",
+  // Stock-lot lifecycle (post-audit addition, 18-api-plan.md §2.5 documents these as `lot.hold`/
+  // `lot.release` on a distinct `stock_lot` resource key -- this codebase's `inventory.stock_lot`
+  // resource key groups them instead; see seed.ts's PERMISSIONS block comment for the
+  // reconciliation note). "hold" quarantines a lot (excludes it from FEFO); "release" reverses
+  // that, only from a held state.
+  "hold",
+  "release",
+  // R4.2 expiry dashboard read (post-audit addition) -- distinct verb from plain "view" since it
+  // is a cross-item reporting surface, not a single record.
+  "view_dashboard",
+  // Stock-take module verbs. "count" gates `PUT /stock-takes/:id/lines` (recording counted
+  // quantities) -- distinct from "edit" because entering a count is a narrower, staff-level
+  // action than editing the take's own header fields (which this Phase 1 API does not even
+  // expose, matching the "no PATCH" endpoint list). "generate_adjustments" gates the one step
+  // that actually produces posted `stock_adjustment` documents from a take's variance -- kept
+  // distinct from "post" (which stock-take itself never does, see inventory.ts's stockTakes doc
+  // comment) and from "close" (the take's own terminal-state transition, mirroring
+  // `purchase.order`'s existing close/cancel split above).
+  "count",
+  "generate_adjustments",
 ] as const;
 
 export type ActionKey = (typeof ACTION_KEYS)[number];
@@ -55,6 +75,9 @@ export const RESOURCE_KEYS = [
   "catalog.item",
   "inventory.adjustment",
   "inventory.stock",
+  "inventory.stock_lot",
+  "inventory.expiry",
+  "inventory.stock_take",
   "purchase",
   "purchase.supplier",
   "purchase.order",

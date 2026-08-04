@@ -6,6 +6,11 @@
 // remaining qty); quarantined lots are excluded (08 §7.2 -- the legacy honoured `Locked`
 // nowhere; this service is where the rebuild actually enforces it).
 //
+// Expiry-by-DATE fix (post-audit): `allocateFefo` also excludes lots whose `expiryDate` is
+// before the caller's `asOfDate` -- nothing in this codebase ever transitions `lot_status` to
+// 'expired' automatically, so date-based exclusion has to happen here, not by trusting the
+// status column alone. See `allocateFefo`'s own comment for the full rationale.
+//
 // TX-6 lock order note: balances are locked in stock_lot_id ASC order (deterministic across
 // concurrent writers), THEN FEFO-sorted in memory -- lot counts per item are small.
 import { Injectable } from "@nestjs/common";
@@ -135,7 +140,20 @@ export class StockService {
    */
   async allocateFefo(
     tx: Tx,
-    params: { tenantId: number; branchId: number; itemId: number; qtyRequired: string },
+    params: {
+      tenantId: number;
+      branchId: number;
+      itemId: number;
+      qtyRequired: string;
+      /** The business date this allocation happens on, `"YYYY-MM-DD"` -- same convention as
+       *  `MovementInput.postingDate` / `CreateAdjustmentInput.documentDate`. Required (not
+       *  defaulted to a raw `new Date()` in here): this runs inside the caller's transaction,
+       *  and every other date-sensitive write in this module takes "now" from the caller's
+       *  business date for the same reason -- deterministic, replayable, no server-clock read
+       *  inside a DB transaction. Lots whose `expiryDate` is strictly before this date are
+       *  excluded from allocation (see the filter below). */
+      asOfDate: string;
+    },
   ): Promise<FefoAllocation[]> {
     const rows = await tx
       .select({
@@ -154,11 +172,21 @@ export class StockService {
       .orderBy(asc(stockBalances.stockLotId))
       .for("update");
 
-    // B-7: quarantined/recalled/expired lots are NOT silently consumable (fixes the legacy
-    // `Locked` no-op). Expired-lot *dates* are guarded at the sale service layer (B-9 warn/
-    // block/allow option); here only hard lot statuses filter.
-    const candidates = rows
-      .filter((r) => r.lotStatus === "available" && !Quantity.fromDb(r.qtyOnHand).isZero())
+    // B-7: quarantined/recalled/consumed lots are NOT silently consumable (fixes the legacy
+    // `Locked` no-op) -- filtered by lotStatus here.
+    const usableStatusRows = rows.filter(
+      (r) => r.lotStatus === "available" && !Quantity.fromDb(r.qtyOnHand).isZero(),
+    );
+
+    // Expiry-by-DATE fix: an 'available'-status lot whose expiryDate has already passed used to
+    // be allocated anyway -- nothing anywhere in this codebase ever flips lot_status to
+    // 'expired' automatically (no scheduled job, no write path sets it), so relying on lotStatus
+    // alone silently sold expired stock. `expiryDate === null` (unknown expiry, §T56) is NEVER
+    // excluded here -- an unknown expiry is not a known-past expiry. A lot expiring exactly on
+    // `asOfDate` is still usable (excluded only once strictly before it).
+    const asOf = new Date(`${params.asOfDate}T00:00:00`);
+    const candidates = usableStatusRows
+      .filter((r) => r.expiryDate === null || r.expiryDate.getTime() >= asOf.getTime())
       .sort((a, b) => {
         if (a.priority !== b.priority) return a.priority - b.priority; // B-2 (1) priority
         const ax = a.expiryKey?.getTime() ?? Infinity;
@@ -186,6 +214,19 @@ export class StockService {
     }
 
     if (!remaining.isZero()) {
+      // Every 'available'-status lot with stock is past its expiry -- distinct from ordinary
+      // insufficient stock (post-audit fix instruction): the generic INSUFFICIENT_STOCK message
+      // would read as "no stock exists" when stock in fact exists but is expired, a materially
+      // different situation for staff to act on (write-off/return vs reorder). Only raised when
+      // NO non-expired candidate exists at all; a partial shortfall alongside some expired lots
+      // still reports as ordinary INSUFFICIENT_STOCK below.
+      if (candidates.length === 0 && usableStatusRows.length > 0) {
+        throw new BusinessRuleException(
+          "INVENTORY.EXPIRED_STOCK_ONLY",
+          "Only expired stock available",
+          `Item ${params.itemId}: ${usableStatusRows.length} lot(s) with stock on hand exist but all are past their expiry date as of ${params.asOfDate}; none can be allocated.`,
+        );
+      }
       throw new BusinessRuleException(
         "INVENTORY.INSUFFICIENT_STOCK",
         "Not enough stock",

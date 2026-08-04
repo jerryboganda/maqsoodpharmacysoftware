@@ -40,3 +40,30 @@ export const LotListQuerySchema = z.object({
   offset: zOffset,
 });
 export class LotListQueryDto extends createZodDto(LotListQuerySchema) {}
+
+export const StockLotIdParamSchema = z.object({
+  id: zId,
+});
+export class StockLotIdParamDto extends createZodDto(StockLotIdParamSchema) {}
+
+/** POST /stock-lots/{id}/hold body. `holdReasonId` is the real soft-ref column on `stock_lot`
+ *  (catalog.ts) -- persisted when supplied. `reason` is accepted for the request's audit trail
+ *  (mirrors `ApproveAdjustmentSchema`'s same choice above) but there is no free-text column on
+ *  `stock_lot` to store it. */
+export const HoldStockLotSchema = z.object({
+  holdReasonId: zId.optional(),
+  reason: z.string().max(500).optional(),
+});
+export class HoldStockLotDto extends createZodDto(HoldStockLotSchema) {}
+
+/** POST /stock-lots/{id}/release body -- `reason` only, same not-persisted caveat as hold's. */
+export const ReleaseStockLotSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+export class ReleaseStockLotDto extends createZodDto(ReleaseStockLotSchema) {}
+
+/** GET /inventory/expiry-dashboard query. */
+export const ExpiryDashboardQuerySchema = z.object({
+  itemId: zId.optional(),
+});
+export class ExpiryDashboardQueryDto extends createZodDto(ExpiryDashboardQuerySchema) {}

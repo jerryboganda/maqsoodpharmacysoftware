@@ -3,9 +3,11 @@
 // 700K-row stream), and the lot browser. Plain reads, no transaction (TX-1 -- services own
 // transactions; none is needed here).
 import { Injectable } from "@nestjs/common";
-import { and, desc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, lt, lte, sql } from "drizzle-orm";
 import { getDb, items, stockBalances, stockLots, stockMovements } from "@pharmacy/db";
 
+import { localToday } from "../../../common/dates/index.js";
+import { AppException } from "../../../common/errors/index.js";
 import type { TenantBranchScope } from "../infrastructure/tenant-context.service.js";
 
 export interface StockListFilters {
@@ -27,6 +29,10 @@ export interface LotListFilters {
   readonly lotStatus?: "available" | "quarantined" | "expired" | "recalled" | "consumed" | undefined;
   readonly limit: number;
   readonly offset: number;
+}
+
+export interface ExpiryDashboardFilters {
+  readonly itemId?: number | undefined;
 }
 
 @Injectable()
@@ -146,5 +152,124 @@ export class StockQueryService {
       data: rows.slice(0, filters.limit),
       meta: { limit: filters.limit, offset: filters.offset, hasMore },
     };
+  }
+
+  /**
+   * GET /stock-lots/:id -- full lot detail: the lot row (same fields as `listLots`, plus
+   * `holdReasonId`/`expiryStatus`/`manufacturedOn`/`receivedOn`/source-document soft refs) with
+   * its current branch on-hand, plus its most recent movements (reuses `listMovements`'
+   * `stockLotId` filter). 18-api-plan.md §2.5 additionally documents a resolved `sourceDocument`
+   * object -- deferred here: `sourceDocumentTypeId`/`sourceDocumentId` are already on the row for
+   * a caller to resolve, and a generic cross-document-type join is a separate increment, not
+   * something this audit-fix task asked for.
+   */
+  async getLotById(scope: TenantBranchScope, stockLotId: number) {
+    const db = getDb();
+    const [lot] = await db
+      .select({
+        stockLotId: stockLots.stockLotId,
+        itemId: stockLots.itemId,
+        batchNo: stockLots.batchNo,
+        expiryDate: stockLots.expiryDate,
+        expiryStatus: stockLots.expiryStatus,
+        manufacturedOn: stockLots.manufacturedOn,
+        supplierId: stockLots.supplierId,
+        sourceDocumentTypeId: stockLots.sourceDocumentTypeId,
+        sourceDocumentId: stockLots.sourceDocumentId,
+        receivedOn: stockLots.receivedOn,
+        receiptUnitCost: stockLots.receiptUnitCost,
+        lotStatus: stockLots.lotStatus,
+        holdReasonId: stockLots.holdReasonId,
+        priority: stockLots.priority,
+        qtyOnHand: sql<string>`coalesce(${stockBalances.qtyOnHand}, '0.0000')`,
+      })
+      .from(stockLots)
+      .leftJoin(
+        stockBalances,
+        and(
+          eq(stockBalances.stockLotId, stockLots.stockLotId),
+          eq(stockBalances.itemId, stockLots.itemId),
+          eq(stockBalances.branchId, stockLots.branchId),
+        ),
+      )
+      .where(
+        and(
+          eq(stockLots.tenantId, scope.tenantId),
+          eq(stockLots.branchId, scope.branchId),
+          eq(stockLots.stockLotId, stockLotId),
+        ),
+      );
+    if (!lot) {
+      throw new AppException({
+        status: 404,
+        code: "INVENTORY.STOCK_LOT_NOT_FOUND",
+        title: "Stock lot not found",
+        detail: `No stock lot with id ${stockLotId} exists.`,
+      });
+    }
+
+    const movements = await this.listMovements(scope, { stockLotId, limit: 100 });
+    return { ...lot, movements: movements.data };
+  }
+
+  /**
+   * GET /inventory/expiry-dashboard -- lots with stock still on hand (`qtyOnHand > 0`),
+   * expiring within 90 days of today (already-past-due lots included -- bucket `"expired"` --
+   * since those are exactly the stock the `allocateFefo` expiry fix now refuses to sell, and
+   * surfacing them is the whole point of this dashboard). Returns a flat, soonest-first list with
+   * a computed `daysToExpiry`/`bucket` field per lot, matching every other list endpoint in this
+   * file (`{ data, meta }`) -- NOT 18-api-plan.md §2.5's three-array-of-buckets response shape;
+   * this task's instruction explicitly allowed either shape, and the flat list needs no separate
+   * response contract. Unknown-expiry lots (`expiryDate: null`, §T56) never appear here -- R4.6's
+   * separate unknown-expiry queue is a different, undelivered endpoint.
+   */
+  async expiryDashboard(scope: TenantBranchScope, filters: ExpiryDashboardFilters) {
+    const db = getDb();
+    const asOfDate = localToday();
+    const asOf = new Date(`${asOfDate}T00:00:00`);
+    const MS_PER_DAY = 86_400_000;
+    const horizon = new Date(asOf.getTime() + 90 * MS_PER_DAY);
+
+    const conditions = [
+      eq(stockLots.tenantId, scope.tenantId),
+      eq(stockLots.branchId, scope.branchId),
+      isNotNull(stockLots.expiryDate),
+      lte(stockLots.expiryDate, horizon),
+    ];
+    if (filters.itemId !== undefined) conditions.push(eq(stockLots.itemId, filters.itemId));
+
+    const rows = await db
+      .select({
+        stockLotId: stockLots.stockLotId,
+        itemId: stockLots.itemId,
+        itemName: items.name,
+        batchNo: stockLots.batchNo,
+        expiryDate: stockLots.expiryDate,
+        lotStatus: stockLots.lotStatus,
+        qtyOnHand: stockBalances.qtyOnHand,
+      })
+      .from(stockLots)
+      .innerJoin(
+        stockBalances,
+        and(
+          eq(stockBalances.stockLotId, stockLots.stockLotId),
+          eq(stockBalances.itemId, stockLots.itemId),
+          eq(stockBalances.branchId, stockLots.branchId),
+        ),
+      )
+      .innerJoin(items, eq(items.itemId, stockLots.itemId))
+      .where(and(...conditions, sql`${stockBalances.qtyOnHand} > 0`))
+      .orderBy(asc(stockLots.expiryDate));
+
+    const data = rows.map((r) => {
+      if (r.expiryDate === null) {
+        throw new Error(`stock lot ${r.stockLotId} unexpectedly has no expiry date`); // unreachable; SQL filter guarantees non-null
+      }
+      const daysToExpiry = Math.round((r.expiryDate.getTime() - asOf.getTime()) / MS_PER_DAY);
+      const bucket = daysToExpiry < 0 ? "expired" : daysToExpiry <= 30 ? "30" : daysToExpiry <= 60 ? "60" : "90";
+      return { ...r, expiryDate: r.expiryDate, daysToExpiry, bucket };
+    });
+
+    return { data, meta: { asOfDate } };
   }
 }

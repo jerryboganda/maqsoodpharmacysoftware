@@ -177,6 +177,91 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
   },
 
+  // -- Inventory / stock takes (physical counts). list/view/create mirror `inventory.adjustment`'s
+  // own role sets exactly (same read/write split: owner+pharmacy_manager+shift_incharge+
+  // accountant+auditor read, pharmacy_manager+shift_incharge write); "count" (recording counted
+  // quantities) is granted to the same operational role set as "create" -- the staff who run a
+  // count are the staff who enter it. "generate_adjustments" and "close" mirror
+  // `inventory.adjustment:approve` exactly (owner/pharmacy_manager only, isSensitive) -- both are
+  // the moment a count's variance becomes a real, posted GL-affecting document (or, for close,
+  // the point after which it cannot be revisited), the same seriousness this task's own
+  // instruction draws between approving vs. merely creating an adjustment.
+  {
+    resource: "inventory.stock_take",
+    action: "list",
+    name: "List stock takes",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "accountant", "auditor"],
+  },
+  {
+    resource: "inventory.stock_take",
+    action: "view",
+    name: "View a stock take (detail, variance)",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "accountant", "auditor"],
+  },
+  {
+    resource: "inventory.stock_take",
+    action: "create",
+    name: "Create a stock take and generate its count sheet",
+    roles: ["pharmacy_manager", "shift_incharge"],
+  },
+  {
+    resource: "inventory.stock_take",
+    action: "count",
+    name: "Record counted quantities on a stock take",
+    roles: ["pharmacy_manager", "shift_incharge"],
+  },
+  {
+    resource: "inventory.stock_take",
+    action: "generate_adjustments",
+    name: "Turn a stock take's variance into posted stock adjustments",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "inventory.stock_take",
+    action: "close",
+    name: "Close a stock take",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+
+  // -- Inventory / stock lots + expiry dashboard (post-audit addition: the FEFO expiry fix,
+  // GET /stock-lots/{id}, POST /stock-lots/{id}/hold|release, GET /inventory/expiry-dashboard).
+  // 18-api-plan.md §2.5 documents this feature under a *different* scheme -- a `stock_lot`
+  // resource key with `lot.hold`/`lot.release`/`lot.view` verbs, hold granted to MGR/SHF, release
+  // to MGR only -- but this task's explicit instruction was to key these under `inventory.stock_lot`
+  // (view/hold/release) and `inventory.expiry` (view_dashboard), with hold/release restricted
+  // exactly like `inventory.adjustment:approve` (owner/pharmacy_manager only). Followed verbatim
+  // per that explicit instruction, same "diff report, have the owner sign it" reconciliation this
+  // file's other explicit-fallback rows (catalog.item:edit/:deactivate, purchase.order:close/
+  // :cancel) already flag pending a real matrix sign-off.
+  {
+    resource: "inventory.stock_lot",
+    action: "view",
+    name: "View a stock lot's detail",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "inventory.stock_lot",
+    action: "hold",
+    name: "Hold (quarantine) a stock lot",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "inventory.stock_lot",
+    action: "release",
+    name: "Release a held stock lot back to available",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "inventory.expiry",
+    action: "view_dashboard",
+    name: "View the expiry dashboard",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+
   // -- Purchasing (§I.3: purchase_officer creates/edits but per §I.4 does NOT post unaided --
   // this Phase 1 API has a single combined create-and-post endpoint, so `purchase:create` is the
   // whole capability until create/post split into separate endpoints; tracked as a follow-up, not
@@ -442,7 +527,10 @@ const OPTION_LISTS = [
 // ---------------------------------------------------------------------------------------------
 
 // §T04-§T06: one document_type per document kind, one doc_series (never-reset, pad 6) per type,
-// one '*' counter row per series primed at 1.
+// one '*' counter row per series primed at 1. Seeded by Block 1c below, per-row idempotent --
+// this array is safe to extend in a future wave and re-seed against an already-seeded database
+// (this was a real gap, hit live: STOCK_TAKE/STK below wasn't seeded on an already-seeded dev DB
+// until Block 1c was added specifically to fix it, same shape as block 1b's own earlier fix).
 const DOC_TYPES = [
   { code: "SALE", name: "Sale invoice", seriesCode: "SV", prefix: "SV-" },
   { code: "SALE_RETURN", name: "Sale return", seriesCode: "SR", prefix: "SR-" },
@@ -450,6 +538,7 @@ const DOC_TYPES = [
   { code: "PURCHASE_RETURN", name: "Purchase return", seriesCode: "PR", prefix: "PR-" },
   { code: "PURCHASE_ORDER", name: "Purchase order", seriesCode: "PO", prefix: "PO-" },
   { code: "ADJUSTMENT", name: "Stock adjustment", seriesCode: "ADJ", prefix: "ADJ-" },
+  { code: "STOCK_TAKE", name: "Stock take", seriesCode: "STK", prefix: "STK-" },
 ] as const;
 
 // §T23/§T24: Pakistan fiscal year (July-June), all periods open. Dates constructed at UTC
@@ -722,12 +811,65 @@ async function main(): Promise<void> {
     );
   });
 
+  // ---- Block 1c: document types / doc series / counters (per-row idempotent) -------------------
+  // Independently guarded per docType.code (not a single "does DOC_TYPES exist" check) -- same
+  // reason block 1b was fixed this way in an earlier wave. Block 2 below tops up everything IT
+  // owns behind a single "does document_type SALE exist" guard, which means a DOC_TYPES entry
+  // added after a database's first successful seed (this is exactly how this wave's own
+  // STOCK_TAKE/STK addition was discovered broken -- POST /stock-takes 422'd
+  // DOC.SERIES_MISSING against an already-seeded dev DB) would otherwise never get seeded on a
+  // later `pnpm run seed` run. Pulled out of block 2's transaction into its own top-level,
+  // always-runs step so every DOC_TYPES entry -- present today or added by a future wave -- gets
+  // topped up on every run, regardless of whether the rest of block 2 already ran.
+  const [tenantForDocTypes] = await db.select({ tenantId: tenants.tenantId }).from(tenants).where(eq(tenants.code, "dev"));
+  if (!tenantForDocTypes) throw new Error("Dev tenant missing after block 1 -- cannot seed document types.");
+  {
+    const tenantId = tenantForDocTypes.tenantId;
+    let docTypesInserted = 0;
+    for (const docType of DOC_TYPES) {
+      const [existingType] = await db
+        .select({ documentTypeId: documentTypes.documentTypeId })
+        .from(documentTypes)
+        .where(and(eq(documentTypes.tenantId, tenantId), eq(documentTypes.code, docType.code)));
+      if (existingType) continue;
+
+      await db.transaction(async (tx) => {
+        await tx.insert(documentTypes).values({ tenantId, code: docType.code, name: docType.name });
+        const [typeRow] = await tx
+          .select({ documentTypeId: documentTypes.documentTypeId })
+          .from(documentTypes)
+          .where(and(eq(documentTypes.tenantId, tenantId), eq(documentTypes.code, docType.code)));
+        if (!typeRow) throw new Error(`Failed to read back the just-inserted document type "${docType.code}".`);
+
+        await tx.insert(docSeries).values({
+          tenantId,
+          documentTypeId: typeRow.documentTypeId,
+          code: docType.seriesCode,
+          prefix: docType.prefix,
+          padWidth: 6,
+          resetPolicy: "never", // §7.6 N-4 default
+        });
+        const [seriesRow] = await tx
+          .select({ docSeriesId: docSeries.docSeriesId })
+          .from(docSeries)
+          .where(and(eq(docSeries.tenantId, tenantId), eq(docSeries.code, docType.seriesCode)));
+        if (!seriesRow) throw new Error(`Failed to read back the just-inserted doc series "${docType.seriesCode}".`);
+
+        await tx.insert(docSeriesCounters).values({ docSeriesId: seriesRow.docSeriesId, periodKey: "*", nextValue: 1 });
+      });
+      docTypesInserted++;
+    }
+    console.log(`Document types: ${docTypesInserted} new type(s)/series/counter(s) seeded (${DOC_TYPES.length} checked).`);
+  }
+
   // ---- Block 2: docflow / GL chart / payments / categories / parties / items ------------------
   // Separately guarded (document_type SALE for the dev tenant) so this block can top up a
-  // database that was seeded by the older, block-1-only shape of this script.
-  const [tenant] = await db.select({ tenantId: tenants.tenantId }).from(tenants).where(eq(tenants.code, "dev"));
-  if (!tenant) throw new Error("Dev tenant missing after block 1 -- cannot seed posting fixtures.");
-  const tenantId = tenant.tenantId;
+  // database that was seeded by the older, block-1-only shape of this script. Document
+  // types/series/counters themselves are now seeded by Block 1c above (per-row idempotent), not
+  // here -- everything else in this block (GL chart, fiscal periods, parties, items, categories)
+  // is far less likely to grow incrementally wave-over-wave than DOC_TYPES is, so widening this
+  // block's own guard to match is left as a follow-up, not silently assumed unnecessary.
+  const tenantId = tenantForDocTypes.tenantId;
 
   const existingDocflow = await db
     .select({ documentTypeId: documentTypes.documentTypeId })
@@ -740,32 +882,6 @@ async function main(): Promise<void> {
   }
 
   await db.transaction(async (tx) => {
-    // §T04-§T06: document types, numbering series (prefix + pad 6, never reset), '*' counters.
-    for (const docType of DOC_TYPES) {
-      await tx.insert(documentTypes).values({ tenantId, code: docType.code, name: docType.name });
-      const [typeRow] = await tx
-        .select({ documentTypeId: documentTypes.documentTypeId })
-        .from(documentTypes)
-        .where(and(eq(documentTypes.tenantId, tenantId), eq(documentTypes.code, docType.code)));
-      if (!typeRow) throw new Error(`Failed to read back the just-inserted document type "${docType.code}".`);
-
-      await tx.insert(docSeries).values({
-        tenantId,
-        documentTypeId: typeRow.documentTypeId,
-        code: docType.seriesCode,
-        prefix: docType.prefix,
-        padWidth: 6,
-        resetPolicy: "never", // §7.6 N-4 default
-      });
-      const [seriesRow] = await tx
-        .select({ docSeriesId: docSeries.docSeriesId })
-        .from(docSeries)
-        .where(and(eq(docSeries.tenantId, tenantId), eq(docSeries.code, docType.seriesCode)));
-      if (!seriesRow) throw new Error(`Failed to read back the just-inserted doc series "${docType.seriesCode}".`);
-
-      await tx.insert(docSeriesCounters).values({ docSeriesId: seriesRow.docSeriesId, periodKey: "*", nextValue: 1 });
-    }
-
     // §T23/§T24: FY2027 (Pakistan FY: 2026-07-01 -> 2027-06-30, open) + 12 open monthly periods.
     await tx.insert(fiscalYears).values({ tenantId, code: FY_CODE, startDate: FY_START, endDate: FY_END, status: "open" });
     const [fyRow] = await tx
