@@ -117,6 +117,26 @@ const PERMISSIONS: ReadonlyArray<{
     name: "View an item",
     roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
   },
+  // 09 §I.4's target matrix has no dedicated "item edit"/"item deactivate" row (only "item
+  // create" -- pharmacy_manager/shift_incharge ●, purchase_officer ◐ from PO -- and "item
+  // reprice" -- pharmacy_manager ●, shift_incharge ◐ ≤ limit -- neither of which is "edit any
+  // field" or "deactivate"). Per this task's explicit fallback instruction, granted to
+  // owner/sys_admin/pharmacy_manager as a reasonable default pending an owner sign-off on the
+  // real matrix (same "diff report, have the owner sign it" process 09 §I.6 step 4 describes).
+  {
+    resource: "catalog.item",
+    action: "edit",
+    name: "Edit an item's own fields (name, pricing, etc)",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
+  {
+    resource: "catalog.item",
+    action: "deactivate",
+    name: "Deactivate an item",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
 
   // -- Inventory / stock adjustments --
   {
@@ -197,6 +217,26 @@ const PERMISSIONS: ReadonlyArray<{
     name: "Create a supplier",
     roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
   },
+  {
+    resource: "purchase.supplier",
+    action: "edit",
+    name: "Edit a supplier's own fields",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+  {
+    resource: "purchase.supplier",
+    action: "deactivate",
+    name: "Deactivate a supplier",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "purchase.supplier",
+    action: "view_ledger",
+    name: "View a supplier's AP sub-ledger",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager", "purchase_officer", "accountant", "auditor"],
+  },
 
   // -- Sales (cash-only this increment, 00b D5) --
   {
@@ -216,6 +256,26 @@ const PERMISSIONS: ReadonlyArray<{
     action: "create",
     name: "Create a customer",
     roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "sale.customer",
+    action: "edit",
+    name: "Edit a customer's own fields",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "sale.customer",
+    action: "deactivate",
+    name: "Deactivate a customer",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "sale.customer",
+    action: "view_ledger",
+    name: "View a customer's AR sub-ledger",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager", "accountant", "auditor"],
   },
   {
     resource: "sale.cash",
@@ -507,45 +567,67 @@ async function main(): Promise<void> {
   }
 
   // ---- Block 1b: permission catalogue + role_permission grants --------------------------------
-  // Independently guarded (on `permission` having any rows at all, not on the dev tenant) so this
-  // also tops up a database that was seeded by an earlier shape of this script that predates the
-  // real RBAC grant table (same "top up an older shape" reasoning block 2 already documents).
-  const existingPermissions = await db.select({ permissionId: permissions.permissionId }).from(permissions).limit(1);
-  if (existingPermissions.length > 0) {
-    console.log("Permission catalogue already seeded -- block 1b skipped.");
-  } else {
-    await db.transaction(async (tx) => {
-      const roleRows = await tx.select({ roleId: roles.roleId, roleKey: roles.roleKey }).from(roles).where(eq(roles.isSystem, true));
-      const roleIdByKey = new Map(roleRows.map((r) => [r.roleKey, r.roleId]));
-      for (const roleKey of ROLE_KEYS) {
-        if (!roleIdByKey.has(roleKey)) {
-          throw new Error(`Role "${roleKey}" is not seeded yet -- block 1b must run after block 1's role insert.`);
-        }
+  // Per-row idempotent (NOT a single all-or-nothing "does `permission` have any rows" guard --
+  // that shape bit us for real: Wave 1's first seed run inserted the original catalogue, which
+  // made every later wave's newly-added PERMISSIONS entries silently never get seeded on
+  // subsequent `pnpm run seed` calls, since the block short-circuited before ever looking at
+  // them). Every permission row and every role_permission grant is individually existence-checked
+  // before inserting, so re-running this after PERMISSIONS grows (a new wave, a new resource, a
+  // new role added to an existing permission's grant list) always tops up exactly what's missing
+  // and never double-inserts what's already there.
+  await db.transaction(async (tx) => {
+    const roleRows = await tx.select({ roleId: roles.roleId, roleKey: roles.roleKey }).from(roles).where(eq(roles.isSystem, true));
+    const roleIdByKey = new Map(roleRows.map((r) => [r.roleKey, r.roleId]));
+    for (const roleKey of ROLE_KEYS) {
+      if (!roleIdByKey.has(roleKey)) {
+        throw new Error(`Role "${roleKey}" is not seeded yet -- block 1b must run after block 1's role insert.`);
       }
+    }
 
-      const now = new Date();
-      for (const permission of PERMISSIONS) {
-        const code = `${permission.resource}:${permission.action}`;
+    const now = new Date();
+    let permissionsInserted = 0;
+    let grantsInserted = 0;
+    for (const permission of PERMISSIONS) {
+      const code = `${permission.resource}:${permission.action}`;
+      let [row] = await tx.select({ permissionId: permissions.permissionId }).from(permissions).where(eq(permissions.code, code));
+      if (!row) {
         await tx.insert(permissions).values({
           code,
           name: permission.name,
           permissionKind: "action",
           isSensitive: permission.isSensitive ?? false,
         });
-        const [row] = await tx.select({ permissionId: permissions.permissionId }).from(permissions).where(eq(permissions.code, code));
+        [row] = await tx.select({ permissionId: permissions.permissionId }).from(permissions).where(eq(permissions.code, code));
         if (!row) throw new Error(`Failed to read back the just-inserted permission "${code}".`);
-
-        await tx.insert(rolePermissions).values(
-          permission.roles.map((roleKey) => {
-            const roleId = roleIdByKey.get(roleKey);
-            if (roleId === undefined) throw new Error(`Role "${roleKey}" missing for permission "${code}".`); // unreachable; checked above
-            return { roleId, permissionId: row.permissionId, grantedAt: now };
-          }),
-        );
+        permissionsInserted++;
       }
-    });
-    console.log(`Seeded permission catalogue (${PERMISSIONS.length} permissions) and role_permission grants.`);
-  }
+
+      const existingGrants = await tx
+        .select({ roleId: rolePermissions.roleId })
+        .from(rolePermissions)
+        .where(eq(rolePermissions.permissionId, row.permissionId));
+      const grantedRoleIds = new Set(existingGrants.map((g) => g.roleId));
+
+      const missingRoles = permission.roles.filter((roleKey) => {
+        const roleId = roleIdByKey.get(roleKey);
+        if (roleId === undefined) throw new Error(`Role "${roleKey}" missing for permission "${code}".`); // unreachable; checked above
+        return !grantedRoleIds.has(roleId);
+      });
+      if (missingRoles.length > 0) {
+        await tx.insert(rolePermissions).values(
+          missingRoles.map((roleKey) => ({
+            roleId: roleIdByKey.get(roleKey)!,
+            permissionId: row.permissionId,
+            grantedAt: now,
+          })),
+        );
+        grantsInserted += missingRoles.length;
+      }
+    }
+    console.log(
+      `Permission catalogue: ${permissionsInserted} new permission(s), ${grantsInserted} new role_permission grant(s) (${PERMISSIONS.length} permissions checked).`,
+    );
+  });
 
   // ---- Block 2: docflow / GL chart / payments / categories / parties / items ------------------
   // Separately guarded (document_type SALE for the dev tenant) so this block can top up a

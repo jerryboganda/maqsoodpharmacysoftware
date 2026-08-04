@@ -17,6 +17,17 @@ export const ACTION_KEYS = [
   "post",
   "unpost",
   "approve",
+  // `identity.user:edit` folds activate/deactivate into "edit" (see seed.ts's comment on that
+  // row), but a party master (e.g. `purchase.supplier`) wants a permission distinct from ordinary
+  // field edits for the same reason `identity.user_role:edit` is split from `identity.user:edit`
+  // -- retiring a supplier/customer is a materially more consequential action than correcting its
+  // phone number, and the two should be grantable independently.
+  "deactivate",
+  // Read access to a party's GL sub-ledger (e.g. `purchase.supplier:view_ledger`) is kept
+  // separate from plain "view" of the master-data row: the API plan's required-role column widens
+  // ACC/AUD in and narrows SHF back out relative to `view` (18-api-plan.md §4.1), so folding the
+  // two into one permission would either over- or under-grant one of them.
+  "view_ledger",
   "export",
   "print",
   "reprice",

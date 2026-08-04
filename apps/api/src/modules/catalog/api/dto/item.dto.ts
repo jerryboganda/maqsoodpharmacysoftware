@@ -1,10 +1,20 @@
-// Blueprint: 17-technical-blueprint.md §9.3 layer 1 (Edge). Read-only catalog surface -- the
-// item master itself (creation/pricing edits) is out of scope for this increment; this module
-// exists so purchase/sale invoice screens have something to search and pick an itemId from.
+// Blueprint: 17-technical-blueprint.md §9.3 layer 1 (Edge). Mostly read-only catalog surface --
+// full item CREATE and the item_category/generic_item/manufacturer/dosage_form reference tables
+// remain out of scope (see items.service.ts's header comment); this module now also carries the
+// narrow edit surface for an EXISTING item's own already-populated fields (name/pricing/etc) and
+// the deactivate action, per the same task that added those to items.controller.ts.
 import { createZodDto } from "nestjs-zod";
 import { z } from "zod";
 
+import { zDecimalString4dp } from "../../../../common/validation/money-schemas.js";
+
 const zId = z.coerce.number().int().positive();
+
+/** Non-negative UNIT_PRICE/QUANTITY-archetype (DECIMAL(15,4)) decimal-string (Rule M) -- prices
+ *  and stock-level thresholds on an item are never negative. Passed straight through to the DB
+ *  as a string; no Money/Quantity value-object arithmetic happens on this endpoint. */
+const zNonNegativeDecimal4dp = (label: string) =>
+  zDecimalString4dp(label).refine((v) => !v.startsWith("-"), `${label} cannot be negative`);
 const zLimit = z.coerce.number().int().min(1).max(500).default(50);
 const zOffset = z.coerce.number().int().min(0).default(0);
 // `.optional()` must be OUTERMOST: ZodOptional short-circuits on `undefined` before invoking
@@ -28,3 +38,36 @@ export const ListItemsQuerySchema = z.object({
   offset: zOffset,
 });
 export class ListItemsQueryDto extends createZodDto(ListItemsQuerySchema) {}
+
+/**
+ * PATCH /items/:id -- edits an existing item's own already-populated fields. Deliberately
+ * excludes `isActive` (that is the separate, separately-permissioned `POST /items/:id/deactivate`
+ * action below -- see permissions.ts's ACTION_KEYS comment on why) and every FK-shaped attribute
+ * the class comment in catalog.ts's `items` table defers to a future catalog-support module
+ * (category/class/generic/manufacturer/dosage form/uom/tax schedule/hs code), plus `avgUnitCost`
+ * (catalog.ts: "Maintained only by the costing service; never edited directly") and `legacyId`
+ * (reconciliation key, not a business field). All fields optional, but at least one must be
+ * supplied -- an empty PATCH is a caller bug, not a no-op.
+ */
+export const PatchItemSchema = z
+  .object({
+    customCode: z.string().min(1).max(75).optional(),
+    name: z.string().min(1).max(160).optional(),
+    nameLocal: z.string().max(255).optional(),
+    registrationNo: z.string().max(64).optional(),
+    packUnits: z.coerce.number().int().min(1).max(65535).optional(),
+    allowDecimalQty: z.boolean().optional(),
+    salePrice: zNonNegativeDecimal4dp("salePrice").optional(),
+    purchasePrice: zNonNegativeDecimal4dp("purchasePrice").optional(),
+    minQty: zNonNegativeDecimal4dp("minQty").optional(),
+    maxQty: zNonNegativeDecimal4dp("maxQty").optional(),
+    reorderQty: zNonNegativeDecimal4dp("reorderQty").optional(),
+    hasExpiry: z.boolean().optional(),
+    expiryCaptureMode: z.enum(["required", "prompt", "off"]).optional(),
+    shelfLifeDays: z.coerce.number().int().min(0).max(65535).optional(),
+    storageLocation: z.string().max(100).optional(),
+    isControlledDrug: z.boolean().optional(),
+    notes: z.string().max(1000).optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: "At least one field must be supplied." });
+export class PatchItemDto extends createZodDto(PatchItemSchema) {}
