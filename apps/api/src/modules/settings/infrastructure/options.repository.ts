@@ -8,22 +8,19 @@
 // purpose). `groupLabel`/`minPermission`/`searchTerms`/`meta` map onto the matching §10.5 columns
 // added to option_item alongside this wiring.
 //
-// Phase 1 has exactly one tenant in practice (the seeded "dev" tenant, packages/db/scripts/
-// seed.ts) and no tenant-resolution middleware yet -- every query below is scoped to the actor's
-// own tenant (Actor has no tenantId field yet either; see TODO on listValues). Multi-tenant
-// request-scoping is a real gap, tracked here rather than silently assumed away.
+// Real tenant scoping (17 §9.1): `tenantId` is resolved by the caller (settings.service.ts, via
+// `TenantContextService.resolveScope(actor)`) from the real authenticated actor and threaded
+// through every query below -- `option_list`/`option_item` are both `tenant_id NOT NULL`
+// (options.ts), so an un-scoped query would leak every tenant's option catalogue to every caller.
 import { Injectable } from "@nestjs/common";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb, optionItems, optionLists } from "@pharmacy/db";
 
 import type { OptionValue } from "../domain/option-value.js";
 
 @Injectable()
 export class OptionsRepository {
-  // TODO(real multi-tenancy): scope this query by the caller's tenant once Actor carries a
-  // tenantId (see this file's header comment) -- today `listCode` alone resolves the row because
-  // only the seeded "dev" tenant exists.
-  async listValues(setKey: string): Promise<readonly OptionValue[]> {
+  async listValues(setKey: string, tenantId: number): Promise<readonly OptionValue[]> {
     const db = getDb();
     const rows = await db
       .select({
@@ -42,7 +39,7 @@ export class OptionsRepository {
       })
       .from(optionItems)
       .innerJoin(optionLists, eq(optionItems.optionListId, optionLists.optionListId))
-      .where(eq(optionLists.listCode, setKey));
+      .where(and(eq(optionLists.listCode, setKey), eq(optionItems.tenantId, tenantId)));
 
     return rows.map((row) => ({
       optionValueId: String(row.optionItemId),
@@ -61,9 +58,12 @@ export class OptionsRepository {
     }));
   }
 
-  async isKnownSet(setKey: string): Promise<boolean> {
+  async isKnownSet(setKey: string, tenantId: number): Promise<boolean> {
     const db = getDb();
-    const [row] = await db.select({ optionListId: optionLists.optionListId }).from(optionLists).where(eq(optionLists.listCode, setKey));
+    const [row] = await db
+      .select({ optionListId: optionLists.optionListId })
+      .from(optionLists)
+      .where(and(eq(optionLists.listCode, setKey), eq(optionLists.tenantId, tenantId)));
     return row !== undefined;
   }
 }

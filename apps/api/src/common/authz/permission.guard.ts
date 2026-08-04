@@ -20,7 +20,7 @@ export class PermissionGuard implements CanActivate {
     private readonly permissions: PermissionsService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -44,7 +44,7 @@ export class PermissionGuard implements CanActivate {
       throw new ForbiddenActionException(required.resource, required.action);
     }
 
-    if (!this.permissions.can(actor, required)) {
+    if (!(await this.permissions.can(actor, required))) {
       throw new ForbiddenActionException(required.resource, required.action);
     }
 

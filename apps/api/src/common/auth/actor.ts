@@ -28,6 +28,15 @@ export interface Actor {
   /** Many-to-many, union semantics (09 §I.1 principle 5) -- never a single role. */
   readonly roles: readonly RoleKey[];
   readonly sessionId: string;
+  /** Denormalised onto `user_session` at login time from the user's own `app_user` row
+   *  (session.repository.ts's `create`) -- `null` for a platform-level user (D21: the owner
+   *  administers across every tenant, so has no single tenant of their own). Convenience/audit
+   *  data on the actor; tenant-context.service.ts still resolves scope its own way (a DB lookup
+   *  with a tenant-default-branch fallback) rather than trusting this field blindly, because a
+   *  user whose own `default_branch_id` is unset would otherwise wrongly resolve to no branch at
+   *  all instead of falling back to the tenant's default. */
+  readonly tenantId: number | null;
+  readonly branchId: number | null;
   /** True only for the dev-mode stub actor (session.guard.ts) -- never true once real
    *  authentication is wired. Lets downstream code and logs make the stub impossible to miss. */
   readonly isDevStub: boolean;

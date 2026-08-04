@@ -9,19 +9,19 @@ import { customers, getDb, glAccounts, glAccountSubs } from "@pharmacy/db";
 import type { Actor } from "../../../common/auth/actor.js";
 import type { Tx } from "../../../common/db/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
+import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
 import type { CreateCustomerDto, ListCustomersQueryDto } from "../api/dto/customer.dto.js";
-
-// TODO(real tenancy): single-tenant dev resolution -- tenant/branch come from the session once
-// real multi-tenant auth is wired (17 §9.1). Seeded dev tenant/branch are both id 1.
-const DEV_TENANT_ID = 1;
 
 export type CustomerRow = typeof customers.$inferSelect;
 
 @Injectable()
 export class CustomersService {
-  async list(query: ListCustomersQueryDto): Promise<{ customers: CustomerRow[]; limit: number; offset: number }> {
+  constructor(private readonly tenantContext: TenantContextService) {}
+
+  async list(query: ListCustomersQueryDto, actor: Actor): Promise<{ customers: CustomerRow[]; limit: number; offset: number }> {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
-    const conditions = [eq(customers.tenantId, DEV_TENANT_ID), isNull(customers.deletedAt)];
+    const conditions = [eq(customers.tenantId, tenantId), isNull(customers.deletedAt)];
     if (query.isActive !== undefined) conditions.push(eq(customers.isActive, query.isActive));
     if (query.q !== undefined) {
       const needle = `%${query.q}%`;
@@ -38,12 +38,13 @@ export class CustomersService {
     return { customers: rows, limit: query.limit, offset: query.offset };
   }
 
-  async getById(customerId: number): Promise<CustomerRow> {
+  async getById(customerId: number, actor: Actor): Promise<CustomerRow> {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
     const [row] = await db
       .select()
       .from(customers)
-      .where(and(eq(customers.tenantId, DEV_TENANT_ID), eq(customers.customerId, customerId), isNull(customers.deletedAt)));
+      .where(and(eq(customers.tenantId, tenantId), eq(customers.customerId, customerId), isNull(customers.deletedAt)));
     if (!row) {
       throw new AppException({
         status: 404,
@@ -61,6 +62,7 @@ export class CustomersService {
    * (uk_customer_account: one control account per customer).
    */
   async create(dto: CreateCustomerDto, actor: Actor): Promise<CustomerRow> {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
     const actorId = Number(actor.userId);
 
@@ -68,7 +70,7 @@ export class CustomersService {
       const [existing] = await tx
         .select({ customerId: customers.customerId })
         .from(customers)
-        .where(and(eq(customers.tenantId, DEV_TENANT_ID), eq(customers.code, dto.code)));
+        .where(and(eq(customers.tenantId, tenantId), eq(customers.code, dto.code)));
       if (existing) {
         throw new BusinessRuleException(
           "SALES.CUSTOMER_CODE_TAKEN",
@@ -81,7 +83,7 @@ export class CustomersService {
       const [arSub] = await tx
         .select({ glAccountSubId: glAccountSubs.glAccountSubId })
         .from(glAccountSubs)
-        .where(and(eq(glAccountSubs.tenantId, DEV_TENANT_ID), eq(glAccountSubs.code, "AR_CONTROL")));
+        .where(and(eq(glAccountSubs.tenantId, tenantId), eq(glAccountSubs.code, "AR_CONTROL")));
       if (!arSub) {
         throw new BusinessRuleException(
           "SALES.AR_CONTROL_MISSING",
@@ -94,7 +96,7 @@ export class CustomersService {
       // GL code/name are derived from the customer's own code/name (both tenant-unique).
       const glCode = `15C-${dto.code}`.slice(0, 24);
       await tx.insert(glAccounts).values({
-        tenantId: DEV_TENANT_ID,
+        tenantId,
         glAccountSubId: arSub.glAccountSubId,
         code: glCode,
         name: dto.name,
@@ -109,11 +111,11 @@ export class CustomersService {
       const [glLeaf] = await tx
         .select({ glAccountId: glAccounts.glAccountId })
         .from(glAccounts)
-        .where(and(eq(glAccounts.tenantId, DEV_TENANT_ID), eq(glAccounts.code, glCode)));
+        .where(and(eq(glAccounts.tenantId, tenantId), eq(glAccounts.code, glCode)));
       if (!glLeaf) throw new Error("gl_account insert did not land"); // unreachable; defensive
 
       await tx.insert(customers).values({
-        tenantId: DEV_TENANT_ID,
+        tenantId,
         code: dto.code,
         name: dto.name,
         nameUr: dto.nameUr ?? null,
@@ -134,7 +136,7 @@ export class CustomersService {
       const [created] = await tx
         .select()
         .from(customers)
-        .where(and(eq(customers.tenantId, DEV_TENANT_ID), eq(customers.code, dto.code)));
+        .where(and(eq(customers.tenantId, tenantId), eq(customers.code, dto.code)));
       if (!created) throw new Error("customer insert did not land"); // unreachable; defensive
       return created;
     });

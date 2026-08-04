@@ -15,14 +15,17 @@ export class CustomersController {
 
   @RequirePermission("sale.customer", "list")
   @Get()
-  async list(@Query() query: ListCustomersQueryDto): Promise<{ customers: CustomerRow[]; limit: number; offset: number }> {
-    return this.customers.list(query);
+  async list(
+    @Query() query: ListCustomersQueryDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<{ customers: CustomerRow[]; limit: number; offset: number }> {
+    return this.customers.list(query, actor);
   }
 
   @RequirePermission("sale.customer", "view")
   @Get(":id")
-  async getById(@Param() params: CustomerIdParamDto): Promise<CustomerRow> {
-    return this.customers.getById(params.id);
+  async getById(@Param() params: CustomerIdParamDto, @CurrentActor() actor: Actor): Promise<CustomerRow> {
+    return this.customers.getById(params.id, actor);
   }
 
   /** Creates the customer AND its GL control leaf (Module D: a party IS a ledger account). */

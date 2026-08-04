@@ -80,6 +80,13 @@ export const userSessions = mysqlTable(
   "user_session",
   {
     sessionId: char("session_id", { length: 36 }).primaryKey(),
+    // Real auth (17 §9.1): the client-facing bearer token is a 32-byte random value returned
+    // ONCE at login and never stored -- only its SHA-256 hex digest is persisted here, mirroring
+    // `idempotency_key.request_hash` (system.ts) which is the same char(64)-hex-digest shape
+    // already used elsewhere in this package. `sessionId` remains a random UUID primary key (not
+    // secret by itself -- knowing it without the matching bearer token/hash proves nothing);
+    // session lookup at request time is always by `tokenHash`, never by `sessionId` alone.
+    tokenHash: char("token_hash", { length: 64 }).notNull(),
     userId: fkBigInt("user_id").notNull().references(() => appUsers.userId),
     tenantId: fkBigInt("tenant_id").references(() => tenants.tenantId),
     branchId: fkBigInt("branch_id").references(() => branches.branchId),
@@ -93,6 +100,7 @@ export const userSessions = mysqlTable(
     machineName: varchar("machine_name", { length: 64 }), // successor to legacy SaleLedger.MachineName
   },
   (table) => ({
+    tokenHashUnique: uniqueIndex("uk_user_session_token_hash").on(table.tokenHash),
     userIdx: index("ix_user_session_user").on(table.userId, table.issuedAt),
     liveIdx: index("ix_user_session_live").on(table.expiresAt, table.revokedAt),
     tenantIdx: index("ix_user_session_tenant").on(table.tenantId, table.expiresAt),

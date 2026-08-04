@@ -33,12 +33,8 @@ import { DocNumberService, FiscalPeriodService } from "../../../common/docflow/i
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
 import { JournalService, type JournalLegInput } from "../../../common/ledger/journal.service.js";
 import { StockService, type FefoAllocation } from "../../inventory/infrastructure/stock.service.js";
+import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
 import type { CreateSaleInvoiceDto, ListSaleInvoicesQueryDto } from "../api/dto/sale-invoice.dto.js";
-
-// TODO(real tenancy): single-tenant dev resolution -- tenant/branch come from the session once
-// real multi-tenant auth is wired (17 §9.1). Seeded dev tenant/branch are both id 1.
-const DEV_TENANT_ID = 1;
-const DEV_BRANCH_ID = 1;
 
 export type SaleInvoiceRow = typeof saleInvoices.$inferSelect;
 export type SaleInvoiceLineRow = typeof saleInvoiceLines.$inferSelect;
@@ -64,9 +60,11 @@ export class SaleInvoicesService {
     private readonly docNumbers: DocNumberService,
     private readonly fiscalPeriods: FiscalPeriodService,
     private readonly journal: JournalService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   async createCashSale(dto: CreateSaleInvoiceDto, actor: Actor): Promise<CreateSaleInvoiceResult> {
+    const { tenantId, branchId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
     const actorId = Number(actor.userId);
 
@@ -89,8 +87,8 @@ export class SaleInvoicesService {
       // -- validate: customer (default walk-in, 00b D5) -------------------------------------
       const customerWhere =
         dto.customerId !== undefined
-          ? and(eq(customers.tenantId, DEV_TENANT_ID), eq(customers.customerId, dto.customerId))
-          : and(eq(customers.tenantId, DEV_TENANT_ID), eq(customers.isWalkIn, true));
+          ? and(eq(customers.tenantId, tenantId), eq(customers.customerId, dto.customerId))
+          : and(eq(customers.tenantId, tenantId), eq(customers.isWalkIn, true));
       const [customer] = await tx.select().from(customers).where(customerWhere).limit(1);
       if (!customer || !customer.isActive) {
         throw new BusinessRuleException(
@@ -105,8 +103,8 @@ export class SaleInvoicesService {
       // -- validate: sale category (default CASH_SALE; cash counterparty only this increment) --
       const categoryWhere =
         dto.saleCategoryId !== undefined
-          ? and(eq(saleCategories.tenantId, DEV_TENANT_ID), eq(saleCategories.saleCategoryId, dto.saleCategoryId))
-          : and(eq(saleCategories.tenantId, DEV_TENANT_ID), eq(saleCategories.isDefault, true), eq(saleCategories.isReturn, false));
+          ? and(eq(saleCategories.tenantId, tenantId), eq(saleCategories.saleCategoryId, dto.saleCategoryId))
+          : and(eq(saleCategories.tenantId, tenantId), eq(saleCategories.isDefault, true), eq(saleCategories.isReturn, false));
       const [category] = await tx.select().from(saleCategories).where(categoryWhere).limit(1);
       if (!category || !category.isEnabled || category.isReturn) {
         throw new BusinessRuleException(
@@ -125,7 +123,7 @@ export class SaleInvoicesService {
       }
 
       // -- validate: fiscal period from the business date (17 §7.8) -------------------------
-      const fiscalPeriodId = await this.fiscalPeriods.resolveOpenPeriod(tx, DEV_TENANT_ID, dto.documentDate);
+      const fiscalPeriodId = await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, dto.documentDate);
 
       // -- validate + price + FEFO-allocate each requested line -----------------------------
       interface PlannedLine {
@@ -179,7 +177,7 @@ export class SaleInvoicesService {
             isActive: items.isActive,
           })
           .from(items)
-          .where(and(eq(items.tenantId, DEV_TENANT_ID), eq(items.itemId, line.itemId)));
+          .where(and(eq(items.tenantId, tenantId), eq(items.itemId, line.itemId)));
         if (!item || !item.isActive) {
           throw new BusinessRuleException(
             "SALES.ITEM_INVALID",
@@ -218,8 +216,8 @@ export class SaleInvoicesService {
         // FEFO allocation locks every candidate stock_balance FOR UPDATE (B-2/TX-6) and throws
         // 422 INVENTORY.INSUFFICIENT_STOCK on shortfall.
         const allocations = await this.stock.allocateFefo(tx, {
-          tenantId: DEV_TENANT_ID,
-          branchId: DEV_BRANCH_ID,
+          tenantId: tenantId,
+          branchId: branchId,
           itemId: item.itemId,
           qtyRequired: qty.toDb(),
         });
@@ -292,7 +290,7 @@ export class SaleInvoicesService {
         const [method] = await tx
           .select()
           .from(paymentMethods)
-          .where(and(eq(paymentMethods.tenantId, DEV_TENANT_ID), eq(paymentMethods.paymentMethodId, payment.paymentMethodId)));
+          .where(and(eq(paymentMethods.tenantId, tenantId), eq(paymentMethods.paymentMethodId, payment.paymentMethodId)));
         if (!method || !method.isEnabled) {
           throw new BusinessRuleException(
             "SALES.PAYMENT_METHOD_INVALID",
@@ -308,7 +306,7 @@ export class SaleInvoicesService {
           const [fallback] = await tx
             .select({ cashBankAccountId: cashBankAccounts.cashBankAccountId })
             .from(cashBankAccounts)
-            .where(and(eq(cashBankAccounts.tenantId, DEV_TENANT_ID), eq(cashBankAccounts.isDefaultForSales, true)))
+            .where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.isDefaultForSales, true)))
             .limit(1);
           cashBankAccountId = fallback?.cashBankAccountId;
         }
@@ -322,7 +320,7 @@ export class SaleInvoicesService {
         const [cba] = await tx
           .select({ cashBankAccountId: cashBankAccounts.cashBankAccountId, glAccountId: cashBankAccounts.glAccountId })
           .from(cashBankAccounts)
-          .where(and(eq(cashBankAccounts.tenantId, DEV_TENANT_ID), eq(cashBankAccounts.cashBankAccountId, cashBankAccountId)));
+          .where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.cashBankAccountId, cashBankAccountId)));
         if (!cba) {
           throw new BusinessRuleException(
             "SALES.CASH_ACCOUNT_MISSING",
@@ -350,14 +348,14 @@ export class SaleInvoicesService {
       const changeAmount = paidTotal.sub(invoiceTotal);
 
       // -- allocate the invoice number (N-1: as late as possible, right before the header) ---
-      const allocatedNumber = await this.docNumbers.allocate(tx, DEV_TENANT_ID, "SV");
+      const allocatedNumber = await this.docNumbers.allocate(tx, tenantId, "SV");
 
       // -- insert header ---------------------------------------------------------------------
       const now = new Date();
       const businessDate = new Date(`${dto.documentDate}T00:00:00`);
       await tx.insert(saleInvoices).values({
-        tenantId: DEV_TENANT_ID,
-        branchId: DEV_BRANCH_ID,
+        tenantId: tenantId,
+        branchId: branchId,
         docNumber: allocatedNumber.docNumber,
         docSeriesId: allocatedNumber.docSeriesId,
         documentTypeId: allocatedNumber.documentTypeId,
@@ -393,12 +391,12 @@ export class SaleInvoicesService {
       // -- insert lines (one DB line per FEFO slice, sequential line_no) ---------------------
       await tx.insert(saleInvoiceLines).values(
         planned.map((line, i) => ({
-          tenantId: DEV_TENANT_ID,
+          tenantId: tenantId,
           saleInvoiceId: header.saleInvoiceId,
           lineNo: i + 1,
           itemId: line.itemId,
           stockLotId: line.stockLotId,
-          branchId: DEV_BRANCH_ID,
+          branchId: branchId,
           qtyPack: "0.0000",
           qtyLoose: line.qty, // requested in loose units
           qtyBonus: "0.0000",
@@ -424,7 +422,7 @@ export class SaleInvoicesService {
       // -- insert payment rows ---------------------------------------------------------------
       await tx.insert(saleInvoicePayments).values(
         plannedPayments.map((payment, i) => ({
-          tenantId: DEV_TENANT_ID,
+          tenantId: tenantId,
           saleInvoiceId: header.saleInvoiceId,
           paymentMethodId: payment.paymentMethodId,
           cashBankAccountId: payment.cashBankAccountId,
@@ -442,8 +440,8 @@ export class SaleInvoicesService {
       for (const [i, line] of planned.entries()) {
         const lineRow = lineRows[i];
         await this.stock.applyMovement(tx, {
-          tenantId: DEV_TENANT_ID,
-          branchId: DEV_BRANCH_ID,
+          tenantId: tenantId,
+          branchId: branchId,
           itemId: line.itemId,
           stockLotId: line.stockLotId,
           qtyDelta: Quantity.zero().sub(Quantity.fromDb(line.qty)).toDb(),
@@ -468,7 +466,7 @@ export class SaleInvoicesService {
         const [row] = await tx
           .select({ glAccountId: glAccounts.glAccountId })
           .from(glAccounts)
-          .where(and(eq(glAccounts.tenantId, DEV_TENANT_ID), eq(glAccounts.code, code)));
+          .where(and(eq(glAccounts.tenantId, tenantId), eq(glAccounts.code, code)));
         if (!row) {
           throw new BusinessRuleException(
             "SALES.GL_ACCOUNT_MISSING",
@@ -531,8 +529,8 @@ export class SaleInvoicesService {
         legs.push({ glAccountId: mustGl("1200"), credit: cogsAmount.toDb(), legRole: "cogs" });
       }
       const journalEntryId = await this.journal.post(tx, {
-        tenantId: DEV_TENANT_ID,
-        branchId: DEV_BRANCH_ID,
+        tenantId: tenantId,
+        branchId: branchId,
         entryNo: allocatedNumber.docNumber,
         entryDate: dto.documentDate,
         documentTypeCode: "SV",
@@ -558,9 +556,13 @@ export class SaleInvoicesService {
     });
   }
 
-  async list(query: ListSaleInvoicesQueryDto): Promise<{ saleInvoices: SaleInvoiceRow[]; limit: number; offset: number }> {
+  async list(
+    query: ListSaleInvoicesQueryDto,
+    actor: Actor,
+  ): Promise<{ saleInvoices: SaleInvoiceRow[]; limit: number; offset: number }> {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
-    const conditions = [eq(saleInvoices.tenantId, DEV_TENANT_ID)];
+    const conditions = [eq(saleInvoices.tenantId, tenantId)];
     if (query.customerId !== undefined) conditions.push(eq(saleInvoices.customerId, query.customerId));
     if (query.status !== undefined) conditions.push(eq(saleInvoices.status, query.status));
     if (query.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, new Date(`${query.dateFrom}T00:00:00`)));
@@ -575,16 +577,20 @@ export class SaleInvoicesService {
     return { saleInvoices: rows, limit: query.limit, offset: query.offset };
   }
 
-  async getById(saleInvoiceId: number): Promise<{
+  async getById(
+    saleInvoiceId: number,
+    actor: Actor,
+  ): Promise<{
     saleInvoice: SaleInvoiceRow;
     lines: SaleInvoiceLineRow[];
     payments: SaleInvoicePaymentRow[];
   }> {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
     const db = getDb();
     const [header] = await db
       .select()
       .from(saleInvoices)
-      .where(and(eq(saleInvoices.tenantId, DEV_TENANT_ID), eq(saleInvoices.saleInvoiceId, saleInvoiceId)));
+      .where(and(eq(saleInvoices.tenantId, tenantId), eq(saleInvoices.saleInvoiceId, saleInvoiceId)));
     if (!header) {
       throw new AppException({
         status: 404,

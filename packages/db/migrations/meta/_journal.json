@@ -15,6 +15,20 @@
       "when": 1785785361976,
       "tag": "0001_icy_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1785810424695,
+      "tag": "0002_equal_skullbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1785814050490,
+      "tag": "0003_spooky_colleen_wing",
+      "breakpoints": true
     }
   ]
 }

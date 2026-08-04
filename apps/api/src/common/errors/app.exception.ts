@@ -66,6 +66,33 @@ export class ForbiddenActionException extends AppException {
   }
 }
 
+/** 401 -- username/password did not match (09 §I.5). Deliberately does not say which of the two
+ *  was wrong, so a caller cannot use the error to enumerate valid usernames. */
+export class InvalidCredentialsException extends AppException {
+  constructor() {
+    super({
+      status: HttpStatus.UNAUTHORIZED,
+      code: "AUTH.INVALID_CREDENTIALS",
+      title: "Invalid credentials",
+      detail: "The username or password is incorrect.",
+    });
+  }
+}
+
+/** 423 -- five failed attempts tripped the lockout (09 §I.5). Distinct status/code from
+ *  `InvalidCredentialsException` so the client can show "try again in N minutes" instead of
+ *  implying the just-submitted password was wrong. */
+export class AccountLockedException extends AppException {
+  constructor(lockedUntil: Date) {
+    super({
+      status: HttpStatus.LOCKED,
+      code: "AUTH.ACCOUNT_LOCKED",
+      title: "Account locked",
+      detail: `Too many failed sign-in attempts. Try again after ${lockedUntil.toISOString()}.`,
+    });
+  }
+}
+
 /** 409 -- optimistic-concurrency conflict (§7.4). */
 export class VersionConflictException extends AppException {
   constructor(resourceType: string, resourceId: string) {

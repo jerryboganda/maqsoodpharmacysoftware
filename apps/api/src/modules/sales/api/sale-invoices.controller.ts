@@ -32,17 +32,21 @@ export class SaleInvoicesController {
   @Get()
   async list(
     @Query() query: ListSaleInvoicesQueryDto,
+    @CurrentActor() actor: Actor,
   ): Promise<{ saleInvoices: SaleInvoiceRow[]; limit: number; offset: number }> {
-    return this.saleInvoices.list(query);
+    return this.saleInvoices.list(query, actor);
   }
 
   @RequirePermission("sale.cash", "view")
   @Get(":id")
-  async getById(@Param() params: SaleInvoiceIdParamDto): Promise<{
+  async getById(
+    @Param() params: SaleInvoiceIdParamDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<{
     saleInvoice: SaleInvoiceRow;
     lines: SaleInvoiceLineRow[];
     payments: SaleInvoicePaymentRow[];
   }> {
-    return this.saleInvoices.getById(params.id);
+    return this.saleInvoices.getById(params.id, actor);
   }
 }

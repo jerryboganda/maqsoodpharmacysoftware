@@ -1,13 +1,17 @@
 // Dev-only seed data. Populates exactly enough of a fresh `pharmacy_platform` database for
 // apps/api's identity/settings modules to run against real data instead of their in-memory
 // fixtures (packages/db/client.ts's consumer), plus the docflow/GL/parties/catalog fixtures the
-// inventory/purchasing/sales posting flows need. Idempotent in two independently guarded blocks:
-// block 1 (tenant/roles/options) is guarded by the "dev" tenant existing; block 2 (docflow, GL
-// chart, payment/purchase/sale categories, parties, items) is guarded by the SALE document_type
-// existing for that tenant -- so block 2 can top up a database that was already seeded by the
-// older, block-1-only shape of this script. Re-running against a fully seeded database is a no-op
-// instead of duplicating rows (MySQL UNIQUE indexes treat every NULL as distinct, which would
-// otherwise let the tenant_id-nullable `role` table's system rows re-insert on every run).
+// inventory/purchasing/sales posting flows need. Idempotent in three independently guarded
+// blocks: block 1 (tenant/roles/dev.owner/options) is guarded by the "dev" tenant existing;
+// block 1b (permission catalogue + role_permission grants) is guarded by `permission` having any
+// rows; block 2 (docflow, GL chart, payment/purchase/sale categories, parties, items) is guarded
+// by the SALE document_type existing for that tenant -- so any block can top up a database that
+// was already seeded by an older, earlier shape of this script that predates it. Re-running
+// against a fully seeded database is a no-op instead of duplicating rows (MySQL UNIQUE indexes
+// treat every NULL as distinct, which would otherwise let the tenant_id-nullable `role` table's
+// system rows re-insert on every run).
+import { randomBytes } from "node:crypto";
+import * as argon2 from "argon2";
 import { and, eq } from "drizzle-orm";
 import { createDb, createDbPool } from "../client";
 import {
@@ -29,7 +33,9 @@ import {
   optionItems,
   optionLists,
   paymentMethods,
+  permissions,
   purchaseCategories,
+  rolePermissions,
   roles,
   saleCategories,
   salesmen,
@@ -48,6 +54,188 @@ const ROLE_KEYS = [
   "accountant",
   "auditor",
 ] as const;
+type RoleKeySeed = (typeof ROLE_KEYS)[number];
+
+// 20 random bytes -> base64url (~27 chars, no padding): a strong, unguessable dev.owner
+// password, generated fresh on every seed run rather than a hardcoded literal (09
+// §I.5/§I.6 step 5: "do not migrate any password value" -- extends here to "never hardcode
+// one either"). Printed once to stdout below; never written to a committed file.
+function generateStrongPassword(): string {
+  return randomBytes(20).toString("base64url");
+}
+
+// 09-roles-permissions.md §I.4 "Recommended target matrix (starting configuration)", mapped onto
+// the actual resource:action pairs apps/api's controllers declare via @RequirePermission() today
+// (grep "RequirePermission(" across apps/api/src/modules). `permission.code` (access.ts) IS this
+// "resource:action" string -- common/authz/permissions.ts's permissionKey() builds the same
+// value app-side, so PermissionsService.can() matches on it directly, no id-translation table
+// needed. KNOWN GAP (see common/authz/permissions.service.ts's header): this grants whole
+// resource+action pairs only -- §I.4's "◐ conditional" (scope/limit-bound) cells are collapsed to
+// a plain grant here; row-level scope and numeric limits (role_scope/role_limit, not yet modelled
+// in access.ts) are real follow-up work, not silently assumed away.
+const PERMISSIONS: ReadonlyArray<{
+  readonly resource: string;
+  readonly action: string;
+  readonly name: string;
+  readonly isSensitive?: boolean;
+  readonly roles: readonly RoleKeySeed[];
+}> = [
+  // -- Self-service (every role needs to be able to see its own profile, change its own
+  // password, and sign itself out) -- distinct resource keys from the admin-only identity.user.*
+  // rows below so granting these broadly can never unlock admin user management (see
+  // apps/api/src/modules/auth/api/auth.controller.ts's header comments on this exact point).
+  { resource: "identity.user", action: "view", name: "View own profile", roles: ROLE_KEYS },
+  { resource: "identity.credential", action: "edit", name: "Change own password", roles: ROLE_KEYS },
+  { resource: "identity.session", action: "delete", name: "Sign out (revoke own session)", roles: ROLE_KEYS },
+  { resource: "settings.option", action: "list", name: "List option-set values", roles: ROLE_KEYS },
+
+  // -- Owner/sys_admin-only platform administration --
+  { resource: "identity.user", action: "list", name: "List users", isSensitive: true, roles: ["owner", "sys_admin"] },
+  { resource: "identity.user", action: "create", name: "Create a user", isSensitive: true, roles: ["owner", "sys_admin"] },
+  { resource: "identity.user", action: "edit", name: "Edit a user (activate/deactivate)", isSensitive: true, roles: ["owner", "sys_admin"] },
+  {
+    resource: "identity.user_role",
+    action: "edit",
+    name: "Assign roles to a user",
+    isSensitive: true,
+    roles: ["owner", "sys_admin"],
+  },
+  { resource: "identity.role", action: "list", name: "List roles", roles: ["owner", "sys_admin"] },
+  { resource: "identity.permission", action: "list", name: "List permissions", roles: ["owner", "sys_admin"] },
+
+  // -- Item catalogue (browsing; §I.4's "item view cost/margin" row narrows further once
+  // field-level permission exists -- see permissions.service.ts's known-gap note) --
+  {
+    resource: "catalog.item",
+    action: "list",
+    name: "List items",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "catalog.item",
+    action: "view",
+    name: "View an item",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+
+  // -- Inventory / stock adjustments --
+  {
+    resource: "inventory.adjustment",
+    action: "list",
+    name: "List stock adjustments",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "accountant", "auditor"],
+  },
+  {
+    resource: "inventory.adjustment",
+    action: "view",
+    name: "View a stock adjustment",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "accountant", "auditor"],
+  },
+  {
+    resource: "inventory.adjustment",
+    action: "create",
+    name: "Create a stock adjustment",
+    roles: ["pharmacy_manager", "shift_incharge"],
+  },
+  {
+    resource: "inventory.adjustment",
+    action: "post",
+    name: "Post a stock adjustment",
+    roles: ["pharmacy_manager", "shift_incharge"],
+  },
+  {
+    resource: "inventory.adjustment",
+    action: "approve",
+    name: "Approve a stock adjustment",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
+    resource: "inventory.stock",
+    action: "list",
+    name: "View stock levels",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
+  },
+
+  // -- Purchasing (§I.3: purchase_officer creates/edits but per §I.4 does NOT post unaided --
+  // this Phase 1 API has a single combined create-and-post endpoint, so `purchase:create` is the
+  // whole capability until create/post split into separate endpoints; tracked as a follow-up, not
+  // silently narrowed) --
+  {
+    resource: "purchase",
+    action: "list",
+    name: "List purchase invoices",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase",
+    action: "view",
+    name: "View a purchase invoice",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase",
+    action: "create",
+    name: "Create + post a purchase invoice",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+  {
+    resource: "purchase.supplier",
+    action: "list",
+    name: "List suppliers",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.supplier",
+    action: "view",
+    name: "View a supplier",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "purchase_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "purchase.supplier",
+    action: "create",
+    name: "Create a supplier",
+    roles: ["pharmacy_manager", "shift_incharge", "purchase_officer"],
+  },
+
+  // -- Sales (cash-only this increment, 00b D5) --
+  {
+    resource: "sale.customer",
+    action: "list",
+    name: "List customers",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.customer",
+    action: "view",
+    name: "View a customer",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.customer",
+    action: "create",
+    name: "Create a customer",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "sale.cash",
+    action: "list",
+    name: "List cash sale invoices",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.cash",
+    action: "view",
+    name: "View a cash sale invoice",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.cash",
+    action: "create",
+    name: "Create a cash sale",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+];
 
 // Mirrors apps/api/src/modules/settings/infrastructure/options.repository.ts's former in-memory
 // SEED, so swapping the repository to real queries preserves the exact same API responses.
@@ -248,6 +436,13 @@ async function main(): Promise<void> {
   if (existing.length > 0) {
     console.log("Dev tenant already seeded -- base block skipped.");
   } else {
+    // Generated once, here, and never written to a committed file (17 §9.1; 09 §I.5/§I.6 step 5
+    // "do not migrate any password value" -- extended here to "never hardcode one either"). This
+    // is the ONLY point in the codebase that ever sees the plaintext; only its argon2id hash is
+    // persisted, below.
+    const devOwnerPassword = generateStrongPassword();
+    const devOwnerPasswordHash = await argon2.hash(devOwnerPassword, { type: argon2.argon2id });
+
     await db.transaction(async (tx) => {
       await tx.insert(tenants).values({ code: "dev", name: "Dev Pharmacy", isActive: true });
       const [tenant] = await tx.select({ tenantId: tenants.tenantId }).from(tenants).where(eq(tenants.code, "dev"));
@@ -269,15 +464,14 @@ async function main(): Promise<void> {
       const [ownerRole] = await tx.select({ roleId: roles.roleId }).from(roles).where(eq(roles.roleKey, "owner"));
       if (!ownerRole) throw new Error("Failed to read back the just-inserted owner role.");
 
-      // Matches SessionGuard's dev-mode stub actor (apps/api/src/common/auth/session.guard.ts):
-      // username "dev.owner". passwordHash is a placeholder -- the dev-mode auth stub never checks
-      // it (real password auth is a separate, not-yet-built increment; see that file's header).
+      // username "dev.owner", real argon2id credential (generated + hashed above).
       await tx.insert(appUsers).values({
         tenantId: tenant.tenantId,
         defaultBranchId: branch.branchId,
         username: "dev.owner",
         displayName: "Dev Owner",
-        passwordHash: "argon2id$unset$dev-mode-auth-stub-active",
+        passwordHash: devOwnerPasswordHash,
+        passwordAlgo: "argon2id",
         mustChangePassword: false,
       });
       const [devOwner] = await tx.select({ userId: appUsers.userId }).from(appUsers).where(eq(appUsers.username, "dev.owner"));
@@ -307,6 +501,50 @@ async function main(): Promise<void> {
       }
     });
     console.log("Seeded dev tenant, branch, roles, dev.owner user, and P1 option lists.");
+    // Labelled, single-line, easy to grep for after a seed run -- the ONLY place this password is
+    // ever printed. Save it now; it is not recoverable afterward (only the argon2id hash persists).
+    console.log(`=== DEV OWNER PASSWORD (save this): ${devOwnerPassword} ===`);
+  }
+
+  // ---- Block 1b: permission catalogue + role_permission grants --------------------------------
+  // Independently guarded (on `permission` having any rows at all, not on the dev tenant) so this
+  // also tops up a database that was seeded by an earlier shape of this script that predates the
+  // real RBAC grant table (same "top up an older shape" reasoning block 2 already documents).
+  const existingPermissions = await db.select({ permissionId: permissions.permissionId }).from(permissions).limit(1);
+  if (existingPermissions.length > 0) {
+    console.log("Permission catalogue already seeded -- block 1b skipped.");
+  } else {
+    await db.transaction(async (tx) => {
+      const roleRows = await tx.select({ roleId: roles.roleId, roleKey: roles.roleKey }).from(roles).where(eq(roles.isSystem, true));
+      const roleIdByKey = new Map(roleRows.map((r) => [r.roleKey, r.roleId]));
+      for (const roleKey of ROLE_KEYS) {
+        if (!roleIdByKey.has(roleKey)) {
+          throw new Error(`Role "${roleKey}" is not seeded yet -- block 1b must run after block 1's role insert.`);
+        }
+      }
+
+      const now = new Date();
+      for (const permission of PERMISSIONS) {
+        const code = `${permission.resource}:${permission.action}`;
+        await tx.insert(permissions).values({
+          code,
+          name: permission.name,
+          permissionKind: "action",
+          isSensitive: permission.isSensitive ?? false,
+        });
+        const [row] = await tx.select({ permissionId: permissions.permissionId }).from(permissions).where(eq(permissions.code, code));
+        if (!row) throw new Error(`Failed to read back the just-inserted permission "${code}".`);
+
+        await tx.insert(rolePermissions).values(
+          permission.roles.map((roleKey) => {
+            const roleId = roleIdByKey.get(roleKey);
+            if (roleId === undefined) throw new Error(`Role "${roleKey}" missing for permission "${code}".`); // unreachable; checked above
+            return { roleId, permissionId: row.permissionId, grantedAt: now };
+          }),
+        );
+      }
+    });
+    console.log(`Seeded permission catalogue (${PERMISSIONS.length} permissions) and role_permission grants.`);
   }
 
   // ---- Block 2: docflow / GL chart / payments / categories / parties / items ------------------

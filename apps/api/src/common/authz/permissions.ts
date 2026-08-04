@@ -28,7 +28,22 @@ export type ActionKey = (typeof ACTION_KEYS)[number];
 
 /** `resource_key` values seeded so far, per module (§2.3). Extend as modules are built --
  *  this is intentionally not exhaustive in Phase 1. */
-export const RESOURCE_KEYS = ["identity.user", "settings.option"] as const;
+export const RESOURCE_KEYS = [
+  "identity.user",
+  "identity.user_role",
+  "identity.role",
+  "identity.permission",
+  "identity.credential",
+  "identity.session",
+  "settings.option",
+  "catalog.item",
+  "inventory.adjustment",
+  "inventory.stock",
+  "purchase",
+  "purchase.supplier",
+  "sale.customer",
+  "sale.cash",
+] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});
 
