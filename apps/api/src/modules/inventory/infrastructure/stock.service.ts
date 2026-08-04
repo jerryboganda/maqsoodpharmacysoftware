@@ -18,7 +18,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { costAmount, Quantity } from "@pharmacy/money";
 import { stockBalances, stockLots, stockMovements } from "@pharmacy/db";
 
-import type { Tx } from "../../../common/db/index.js";
+import type { DbOrTx, Tx } from "../../../common/db/index.js";
 import { BusinessRuleException } from "../../../common/errors/index.js";
 
 export interface MovementInput {
@@ -137,9 +137,20 @@ export class StockService {
    * priority, earliest expiry, smallest remaining qty). Locks every candidate balance FOR
    * UPDATE in stock_lot_id ASC order first (TX-6 deterministic lock order), then sorts. Throws
    * `422 INVENTORY.INSUFFICIENT_STOCK` when the item cannot cover the request.
+   *
+   * Takes `DbOrTx`, not just `Tx` (widened for sale-invoices.service.ts's `preview` -- a dry run
+   * that deliberately never opens a write transaction, per that method's own header comment).
+   * Called with a plain `Db`, the `FOR UPDATE` lock is still valid SQL (MySQL auto-commits each
+   * standalone statement, so the lock is acquired and released within that one SELECT) -- it just
+   * cannot hold across multiple statements the way it does inside a real transaction. That is
+   * exactly right for a preview: it reports availability as of right now, on a best-effort basis,
+   * same as every other "how much is on hand" read in this codebase (StockQueryService has none
+   * of these locks at all) -- it was never going to guarantee the allocation still holds by the
+   * time a real `POST /sale-invoices` follows it. Every real write path (`createCashSale`) still
+   * passes its own `Tx`, so the lock keeps its full cross-statement meaning there.
    */
   async allocateFefo(
-    tx: Tx,
+    tx: DbOrTx,
     params: {
       tenantId: number;
       branchId: number;

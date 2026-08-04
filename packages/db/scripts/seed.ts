@@ -5,9 +5,10 @@
 // dev.owner/options) is guarded by the "dev" tenant existing -- an all-or-nothing guard, kept only
 // because that block's own contents (roles, dev.owner) never grow wave-over-wave. Every block
 // after it (1b permission catalogue + role_permission grants; 1c document types/series/counters;
-// 1d the voucher_category option list; 2 docflow/GL chart/payment/purchase/sale categories/
-// parties/items, guarded by the SALE document_type existing; 2b expense GL leaves + default
-// expense_category rows) is per-row idempotent -- each individually existence-checks its own rows
+// 1d the voucher_category option list; 1e the sales.doc_print_format option list; 2 docflow/GL
+// chart/payment/purchase/sale categories/parties/items, guarded by the SALE document_type
+// existing; 2b expense GL leaves + default expense_category rows) is per-row idempotent -- each
+// individually existence-checks its own rows
 // before insert, NEVER a single "does this table have any rows at all" guard. That per-row
 // discipline is a hard-won lesson from two real bugs hit live in exactly this shape (Wave 2's
 // all-or-nothing PERMISSIONS guard, Wave 4's all-or-nothing document-type guard) -- ANY block
@@ -822,6 +823,114 @@ const PERMISSIONS: ReadonlyArray<{
     name: "View the operational dashboard",
     roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "purchase_officer", "accountant", "auditor"],
   },
+
+  // -- Wave 7: option-list/option-item admin CRUD (`settings.option`), plus the `sale.cash`/
+  // `sale.return` cancel/reverse/print lifecycle actions. Appended as its own wave-labelled block
+  // (not spliced into the original "Self-service"/"Sales" sections above) -- the same convention
+  // Wave 5 and Wave 6 already established for this array: keep each wave's additions together
+  // under their own header comment so the wave history stays visible in a diff, rather than
+  // scattering new rows across old domain groupings. Every row below is existence-checked by the
+  // SAME per-row block 1b loop above (by resource+action `code`, grants by role) -- no new guard
+  // needed, exactly what "per-row idempotent from day one" buys a later wave.
+  //
+  // `settings.option` create/edit -- a new admin CRUD surface this wave for actually authoring
+  // option lists/items (previously only `settings.option:list` existed -- read-only, granted to
+  // every role above under "Self-service"). No explicit 09 §I.4 row exists for option-list
+  // administration (checked the full matrix in I.4: no "option"/"lookup"/"basic data" row at all;
+  // the nearest neighbour, `admin.preferences`, only covers sys_admin (full) / pharmacy_manager
+  // (◐ business prefs) and is about global preferences, not this resource). This task's suggested
+  // precedent, `payment_method:create`/`:edit` (accountant-only, isSensitive, see above), does NOT
+  // transfer directly: payment_method is a single-domain config table with one obvious functional
+  // owner (accountant owns payment methods end to end). `settings.option` is the opposite -- a
+  // generic, cross-cutting mechanism whose existing lists already span sales
+  // (`sale.tender_method`), inventory (`stock_adjustment.reason`), accounting
+  // (`accounting.voucher_category`) and now sales print-format (below) -- no single domain role
+  // owns it. The closer precedent already in this file is `catalog.item:edit`/`:deactivate`
+  // (above, in the item-catalogue section): also a broad, cross-cutting resource with no explicit
+  // §I.4 row, resolved there to owner/sys_admin/pharmacy_manager as a reasonable admin default
+  // pending a real matrix sign-off -- followed here for the identical reason.
+  {
+    resource: "settings.option",
+    action: "create",
+    name: "Create an option list or option item",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
+  {
+    resource: "settings.option",
+    action: "edit",
+    name: "Edit an option list or option item",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
+
+  // `sale.cash`/`sale.return` cancel/reverse -- undoing a posted cash sale or sale return. 09
+  // §I.4 has no row literally named "cancel"/"reverse" for either resource, but it DOES have the
+  // closest real analogue: `sale.cash` "unpost / edit-posted" is the only row in the whole matrix
+  // that covers touching an already-posted sale document, and it is explicit and narrow: owner ○,
+  // sys_admin ○, pharmacy_manager ◐ break-glass, shift_incharge ○, sales_officer ○,
+  // purchase_officer ○, accountant ◐ break-glass, auditor ○. Mirrored onto both new verbs on both
+  // resources (collapsing the ◐ break-glass qualifier to a plain grant -- the same documented
+  // KNOWN GAP as every other ◐ cell in this file): roles = pharmacy_manager, accountant only.
+  // Notably NOT owner -- consistent with 09 §I.3's own description of the `owner` role ("Sees all
+  // financials + reports; **cannot** post transactions"), which this exact table row already
+  // reflects (owner is ○ here even though owner gets full view/list access to the same resource
+  // elsewhere in the matrix). This also widens this file's own established convention for
+  // cancel/reverse by exactly one role: `gl.voucher`/`payment`/`expense` cancel+reverse are all
+  // accountant-only, isSensitive (see those resources above) because they are purely-accounting
+  // documents; a cash sale or sale return, by contrast, is a business-side document
+  // pharmacy_manager already has full create/edit/post authority over (see `sale.cash:create`/
+  // `sale.return:create` above), so its reversal authority tracks that same business-side
+  // ownership rather than narrowing to the accounting-only role. `print` mirrors `sale.cash:view`'s
+  // exact role set per this task's explicit instruction (reading a document already viewable is
+  // not a new privilege boundary) -- not isSensitive, unlike cancel/reverse.
+  //
+  // No `sale.cash:post` row is added, and none should be: this codebase's sale-invoice/purchase-
+  // invoice/payment/expense creation flows are ALL atomic create-and-post in a single transaction
+  // (confirmed by reading purchase-invoice.service.ts lines ~195-225 and ~355-380 -- a "draft"
+  // status is written as an internal same-transaction placeholder, then the SAME request closes it
+  // out to "posted" before the response returns). There is no real, persisted, separately-editable
+  // draft state anywhere in this codebase today, for any document type, so "post" as a standalone
+  // lifecycle verb for sale-invoices is a no-op this wave -- creation already IS create+post
+  // (`POST /sale-invoices`, matching `sale.cash:create`'s own existing name "Create a cash sale",
+  // which already covers posting). There is no code path that would ever check a `sale.cash:post`
+  // permission, so seeding one would be dead data nobody's endpoint reads -- documented here so
+  // whoever reads this later (including the two sibling module-builder agents building on top of
+  // this wave) doesn't mistake the omission for something forgotten.
+  {
+    resource: "sale.cash",
+    action: "cancel",
+    name: "Cancel a posted cash sale invoice",
+    isSensitive: true,
+    roles: ["pharmacy_manager", "accountant"],
+  },
+  {
+    resource: "sale.cash",
+    action: "reverse",
+    name: "Reverse a posted cash sale invoice",
+    isSensitive: true,
+    roles: ["pharmacy_manager", "accountant"],
+  },
+  {
+    resource: "sale.cash",
+    action: "print",
+    name: "Print a cash sale invoice",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "sale.return",
+    action: "cancel",
+    name: "Cancel a posted sale return",
+    isSensitive: true,
+    roles: ["pharmacy_manager", "accountant"],
+  },
+  {
+    resource: "sale.return",
+    action: "reverse",
+    name: "Reverse a posted sale return",
+    isSensitive: true,
+    roles: ["pharmacy_manager", "accountant"],
+  },
 ];
 
 // Mirrors apps/api/src/modules/settings/infrastructure/options.repository.ts's former in-memory
@@ -956,6 +1065,18 @@ const VOUCHER_CATEGORIES = [
     metaJson: { headerSide: "debit", detailSide: "credit", requiredCashBankAccountKind: ["bank"] },
   },
 ] as const;
+
+// §5 (option_list `sales.doc_print_format`, Wave 7 task instruction) -- this wave implements
+// exactly one sale-document print format: a receipt-shaped JSON payload (not a PDF), returned by
+// the two sibling module-builder agents' preview/print endpoints this wave. Modelled as an
+// option_list/option_item pair for the same P1 reason every other pick-list in this file is
+// (never a hardcoded enum -- see options.ts's own header comment), even though today there is
+// only one legal value: a second format becomes a second option_item row later, not a schema
+// change. "sales.doc_print_format", not a bare code, for the same settings/api/dto/
+// option-value.dto.ts regex reason VOUCHER_CATEGORY_LIST_CODE's own comment documents above
+// (`/^[a-z0-9_]+(\.[a-z0-9_]+)+$/`, "module.concept").
+const PRINT_FORMAT_LIST_CODE = "sales.doc_print_format";
+const PRINT_FORMATS = [{ code: "standard_receipt", name: "Standard receipt", sortOrder: 10, isDefault: true }] as const;
 
 // §T23/§T24: Pakistan fiscal year (July-June), all periods open. Dates constructed at UTC
 // midnight -- Asia/Karachi is UTC+5 with no DST, so the DATE component never shifts.
@@ -1382,6 +1503,67 @@ async function main(): Promise<void> {
     console.log(
       `Voucher categories: ${listInserted} new option list(s), ${itemsInserted} new option item(s) ` +
         `(${VOUCHER_CATEGORIES.length} checked).`,
+    );
+  }
+
+  // ---- Block 1e: sales.doc_print_format option list (per-row idempotent) -----------------------
+  // Same shape/position/idempotency pattern as block 1d immediately above -- an always-runs,
+  // per-row-checked top-level step, NOT folded into block 1's single "does the dev tenant exist"
+  // all-or-nothing guard (same reason block 1d's own comment documents: a list added after a
+  // database's first successful seed would otherwise never get seeded on a later run). Fixed
+  // system classification (isAdminExtensible=false, allowsDisable=false) -- this wave implements
+  // exactly one print format (see PRINT_FORMATS above); letting an admin add other format codes
+  // today would be meaningless (no code path renders them yet), and disabling the only format
+  // would leave the preview/print endpoints with zero valid formats to fall back to.
+  {
+    const tenantId = tenantForDocTypes.tenantId;
+    let listInserted = 0;
+    let itemsInserted = 0;
+
+    let [printFormatListRow] = await db
+      .select({ optionListId: optionLists.optionListId })
+      .from(optionLists)
+      .where(and(eq(optionLists.tenantId, tenantId), eq(optionLists.listCode, PRINT_FORMAT_LIST_CODE)));
+    if (!printFormatListRow) {
+      await db.insert(optionLists).values({
+        tenantId,
+        listCode: PRINT_FORMAT_LIST_CODE,
+        name: "Sale document print format",
+        description: "Output format for sale-document print/preview endpoints (receipt-shaped JSON this wave).",
+        isAdminExtensible: false,
+        allowsDisable: false,
+      });
+      [printFormatListRow] = await db
+        .select({ optionListId: optionLists.optionListId })
+        .from(optionLists)
+        .where(and(eq(optionLists.tenantId, tenantId), eq(optionLists.listCode, PRINT_FORMAT_LIST_CODE)));
+      if (!printFormatListRow) throw new Error(`Failed to read back the just-inserted option list "${PRINT_FORMAT_LIST_CODE}".`);
+      listInserted++;
+    }
+    const printFormatOptionListId = printFormatListRow.optionListId;
+
+    for (const format of PRINT_FORMATS) {
+      const [existingItem] = await db
+        .select({ optionItemId: optionItems.optionItemId })
+        .from(optionItems)
+        .where(and(eq(optionItems.optionListId, printFormatOptionListId), eq(optionItems.code, format.code)));
+      if (existingItem) continue;
+
+      await db.insert(optionItems).values({
+        optionListId: printFormatOptionListId,
+        tenantId,
+        code: format.code,
+        name: format.name,
+        isSystem: true,
+        isDefault: format.isDefault,
+        isEnabled: true,
+        sortOrder: format.sortOrder,
+      });
+      itemsInserted++;
+    }
+    console.log(
+      `Sale document print formats: ${listInserted} new option list(s), ${itemsInserted} new option item(s) ` +
+        `(${PRINT_FORMATS.length} checked).`,
     );
   }
 

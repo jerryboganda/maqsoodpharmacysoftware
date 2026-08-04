@@ -23,7 +23,16 @@ import { REQUIRE_IDEMPOTENCY_KEY } from "./require-idempotency-key.decorator.js"
 export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 function canonicalize(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
+  // `JSON.stringify(undefined)` returns `undefined` (not a string) -- a bodyless mutating request
+  // (no Content-Length / no JSON body) leaves `request.body` as `undefined`, which previously made
+  // this throw inside `createHash(...).update(...)` (a real TypeError, found live while building
+  // a bodyless @RequireIdempotencyKey() route -- see options-crud's set-default endpoint, which
+  // worked around it by simply not decorating that route rather than patching this shared file as
+  // a side effect). Canonicalize "no body" to the stable literal "null" so any bodyless endpoint
+  // that DOES want idempotency-key coverage gets one consistent hash across repeats, instead of
+  // crashing.
+  const json = JSON.stringify(sortKeysDeep(value));
+  return json ?? "null";
 }
 
 function sortKeysDeep(value: unknown): unknown {

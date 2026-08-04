@@ -56,32 +56,44 @@
 // movement, an inbound one has no non-negativity guard of its own to lean on for free, so this
 // check is the only guard against over-return.
 import { Injectable } from "@nestjs/common";
-import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import {
   cashBankAccounts,
   customers,
   getDb,
   glAccounts,
+  journalEntries,
+  journalLines,
   saleCategories,
   saleInvoiceLines,
   saleInvoicePayments,
   saleInvoices,
   saleReturnLines,
   saleReturns,
+  stockBalances,
+  stockMovements,
 } from "@pharmacy/db";
 import { costAmount, Money, Quantity } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
 import type { Tx } from "../../../common/db/index.js";
+import { localToday } from "../../../common/dates/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
 import { StockService } from "../../inventory/infrastructure/stock.service.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
-import type { CreateSaleReturnInput } from "../api/dto/sale-return.dto.js";
+import type {
+  CancelSaleReturnInput,
+  CreateSaleReturnInput,
+  LookupInvoiceInput,
+  ReverseSaleReturnInput,
+} from "../api/dto/sale-return.dto.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 
+export type SaleReturnRow = typeof saleReturns.$inferSelect;
+export type SaleReturnLineRow = typeof saleReturnLines.$inferSelect;
 type SaleInvoiceLineRow = typeof saleInvoiceLines.$inferSelect;
 
 @Injectable()
@@ -145,6 +157,91 @@ export class SaleReturnsService {
       .where(eq(saleReturnLines.saleReturnId, saleReturnId))
       .orderBy(saleReturnLines.lineNo);
     return { saleReturn: header, lines };
+  }
+
+  /**
+   * POST /sale-returns/lookup-invoice -- read-only search (18-api-plan.md's "Sale returns" row:
+   * `POST /api/v1/sale-returns/lookup-invoice`, "n/a (read-only POST)", `E-READ`) for the posted
+   * sale invoice a return will be built against. Deliberately unlocked, no transaction -- mirrors
+   * sale-invoices.service.ts's own `preview()` ("a dry run that deliberately never opens a write
+   * transaction"): this reports remaining-returnable quantity as of right now, on a best-effort
+   * basis; `createAndPost`'s own `FOR UPDATE` re-check (its phase-2 lock + `remainingFor`) is what
+   * is actually authoritative at write time, exactly like `preview`'s relationship to
+   * `createCashSale`.
+   *
+   * `docNumber`, exact match only -- see the DTO's own comment for why (no partial/LIKE, no
+   * fiscalInvoiceNo/barcode columns on `sale_invoice` in this codebase today).
+   *
+   * Remaining-returnable per line: original `qty_base` on `sale_invoice_line`, minus every
+   * `sale_return_line.qty_base` already posted against it -- counted across every `sale_return`
+   * row regardless of ITS OWN status (not filtered to "posted"). This deliberately matches
+   * `createAndPost`'s own `remainingFor` helper, which likewise counts every existing
+   * `sale_return_line` row unconditionally: `cancel`/`reverse` (below) never delete or renumber a
+   * return's lines, they only flip the header's status and reverse the stock/GL, so a
+   * cancelled/reversed return's lines are still real historical qty that was, at some point,
+   * validated against and posted. Filtering this preview to "posted only" would silently diverge
+   * from what the real `createAndPost` call will enforce a moment later.
+   */
+  async lookupInvoice(input: LookupInvoiceInput, actor: Actor) {
+    const db = getDb();
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
+
+    const [invoice] = await db
+      .select()
+      .from(saleInvoices)
+      .where(and(eq(saleInvoices.tenantId, tenantId), eq(saleInvoices.docNumber, input.docNumber)));
+    if (!invoice) {
+      throw new AppException({
+        status: 404,
+        code: "SALE_RETURN.INVOICE_NOT_FOUND",
+        title: "Sale invoice not found",
+        detail: `No sale invoice with doc number "${input.docNumber}" exists.`,
+      });
+    }
+    if (invoice.status !== "posted") {
+      throw new BusinessRuleException(
+        "SALE_RETURN.INVOICE_NOT_POSTED",
+        "Invoice not posted",
+        `Sale invoice ${invoice.docNumber} is ${invoice.status}; only a posted invoice can be returned against.`,
+      );
+    }
+
+    const invoiceLines = await db
+      .select()
+      .from(saleInvoiceLines)
+      .where(eq(saleInvoiceLines.saleInvoiceId, invoice.saleInvoiceId))
+      .orderBy(asc(saleInvoiceLines.lineNo));
+
+    const returnedByLineId = new Map<number, Quantity>();
+    if (invoiceLines.length > 0) {
+      const priorRows = await db
+        .select({ saleInvoiceLineId: saleReturnLines.saleInvoiceLineId, qtyBase: saleReturnLines.qtyBase })
+        .from(saleReturnLines)
+        .where(
+          inArray(
+            saleReturnLines.saleInvoiceLineId,
+            invoiceLines.map((l) => l.saleInvoiceLineId),
+          ),
+        );
+      for (const row of priorRows) {
+        if (row.saleInvoiceLineId === null) continue;
+        const existing = returnedByLineId.get(row.saleInvoiceLineId) ?? Quantity.zero();
+        returnedByLineId.set(row.saleInvoiceLineId, existing.add(Quantity.fromDb(row.qtyBase)));
+      }
+    }
+
+    const lines = invoiceLines.map((line) => {
+      const soldQty = Quantity.fromDb(line.qtyBase);
+      const alreadyReturned = returnedByLineId.get(line.saleInvoiceLineId) ?? Quantity.zero();
+      const remaining = soldQty.sub(alreadyReturned);
+      return {
+        ...line,
+        qtyAlreadyReturned: alreadyReturned.toDb(),
+        qtyReturnable: remaining.isNegative() ? Quantity.zero().toDb() : remaining.toDb(),
+      };
+    });
+
+    return { invoice, lines };
   }
 
   /** Create AND post a sale return in one transaction -- S-1's pattern, mirrored (see header). */
@@ -511,6 +608,404 @@ export class SaleReturnsService {
 
       return { saleReturn: finalHeader, lines: finalLines, journalEntryId };
     });
+  }
+
+  /**
+   * POST /sale-returns/:id/cancel -- void an already-posted return. Structural mirror of
+   * sale-invoices.service.ts's `cancel()`/`voidPostedInvoice()`: same header `FOR UPDATE` lock,
+   * same `JournalService` reversal technique (read back the original journal_line rows, swap
+   * debit<->credit, post as a new reversing entry), same stock-movement reversal via
+   * `StockService.applyMovement`. The GUARD, though, is different IN KIND, not just detail --
+   * see the long comment below.
+   *
+   * -- Guard reasoning (the task's own framing: "what downstream state would block a clean
+   * cancel") --
+   * sale-invoices.service.ts's cancel guard is about a DIFFERENT DOCUMENT existing: an active
+   * `sale_return` referencing the invoice. That works there because voiding an invoice always
+   * means posting the dispensed stock BACK IN -- an inbound movement, which has no non-negativity
+   * ceiling and can never fail on quantity grounds, so the only thing that CAN make an invoice
+   * void "unsafe" is something external (a return already built on top of it).
+   *
+   * A sale return's void is the mirror image. It must post the returned stock BACK OUT of the
+   * exact lot(s) the return put it into -- an OUTBOUND movement, which CAN fail if that stock is
+   * no longer there. So the relevant "downstream state" here is not another document, it's the
+   * LOT ITSELF having been touched since this return posted (re-sold on a later sale invoice,
+   * pulled by a stock adjustment, etc. -- exactly the task's own phrasing, "re-sold or adjusted
+   * away").
+   *
+   * The checkable condition this lands on: for every distinct (branch, item, stock lot) this
+   * return posted a movement against, ask the append-only `stock_movement` ledger itself -- does
+   * any OTHER movement row exist for that exact lot with a `stock_movement_id` greater than this
+   * return's own (i.e. did anything happen to this lot AFTER this return posted, in either
+   * direction)? `FOR UPDATE` on the `stock_balance` row first, ascending `stock_lot_id` (TX-6
+   * deterministic lock order, the same discipline purchase-return.service.ts/sale-
+   * invoices.service.ts document for their own multi-row locks), so no concurrent writer can slip
+   * a new movement in between this check and the reversal that follows it. See
+   * `assertStockUntouchedSinceReturn` below for the implementation and why this ledger-order check
+   * -- not a `qty_on_hand` comparison -- is the right one.
+   */
+  async cancel(saleReturnId: number, input: CancelSaleReturnInput, actor: Actor) {
+    const db = getDb();
+    const { tenantId, branchId } = await this.tenantContext.resolveScope(actor);
+    const actorId = Number(actor.userId);
+
+    return db.transaction(async (tx) => {
+      const [saleReturn] = await tx
+        .select()
+        .from(saleReturns)
+        .where(and(eq(saleReturns.tenantId, tenantId), eq(saleReturns.saleReturnId, saleReturnId)))
+        .for("update");
+      if (!saleReturn) {
+        throw new AppException({
+          status: 404,
+          code: "SALE_RETURN.NOT_FOUND",
+          title: "Sale return not found",
+          detail: `No sale return with id ${saleReturnId} exists.`,
+        });
+      }
+      this.assertVoidable(saleReturn);
+
+      const lines = await tx
+        .select()
+        .from(saleReturnLines)
+        .where(eq(saleReturnLines.saleReturnId, saleReturnId))
+        .orderBy(asc(saleReturnLines.lineNo));
+      await this.assertStockUntouchedSinceReturn(tx, saleReturn, lines);
+
+      return this.voidPostedReturn(tx, {
+        saleReturn,
+        lines,
+        tenantId,
+        branchId,
+        actorId,
+        outcome: "cancelled",
+        reason: input.reason ?? "Sale return cancelled",
+        cancelReasonId: input.cancelReasonId ?? null,
+      });
+    });
+  }
+
+  /**
+   * POST /sale-returns/:id/reverse -- an unconditional compensating entry: same stock/GL reversal
+   * mechanics as `cancel` (both funnel through `voidPostedReturn`), but skips the stock-untouched
+   * guard `cancel` enforces (see `cancel`'s own comment). "Unconditional" here means unconditional
+   * with respect to THAT guard only -- the outbound stock movement below is still subject to
+   * `StockService.applyMovement`'s own hard `FOR UPDATE` + non-negativity invariant, which no
+   * document type in this codebase (this one included) can ever bypass, so a `reverse` attempted
+   * when the returned stock has genuinely, entirely been consumed elsewhere still fails with `422
+   * INVENTORY.INSUFFICIENT_STOCK` -- a real physical impossibility neither endpoint can paper
+   * over. The practical difference from `cancel`: `reverse` succeeds in the common case `cancel`
+   * would refuse -- some unrelated activity touched the lot since this return posted, but enough
+   * quantity remains on hand to take this return's own contribution back out.
+   */
+  async reverse(saleReturnId: number, input: ReverseSaleReturnInput, actor: Actor) {
+    const db = getDb();
+    const { tenantId, branchId } = await this.tenantContext.resolveScope(actor);
+    const actorId = Number(actor.userId);
+
+    return db.transaction(async (tx) => {
+      const [saleReturn] = await tx
+        .select()
+        .from(saleReturns)
+        .where(and(eq(saleReturns.tenantId, tenantId), eq(saleReturns.saleReturnId, saleReturnId)))
+        .for("update");
+      if (!saleReturn) {
+        throw new AppException({
+          status: 404,
+          code: "SALE_RETURN.NOT_FOUND",
+          title: "Sale return not found",
+          detail: `No sale return with id ${saleReturnId} exists.`,
+        });
+      }
+      this.assertVoidable(saleReturn);
+
+      const lines = await tx
+        .select()
+        .from(saleReturnLines)
+        .where(eq(saleReturnLines.saleReturnId, saleReturnId))
+        .orderBy(asc(saleReturnLines.lineNo));
+
+      return this.voidPostedReturn(tx, {
+        saleReturn,
+        lines,
+        tenantId,
+        branchId,
+        actorId,
+        outcome: "reversed",
+        reason: input.reason ?? "Sale return reversed",
+        cancelReasonId: null,
+      });
+    });
+  }
+
+  /** Shared by `cancel`/`reverse` -- same status guard as sale-invoices.service.ts's own
+   *  `assertVoidable`, verbatim shape (only a `posted` return can be voided; neither verb can run
+   *  twice). `422 SALE_RETURN.ALREADY_CANCELLED`/`ALREADY_REVERSED`/`NOT_POSTED`. */
+  private assertVoidable(saleReturn: SaleReturnRow): void {
+    if (saleReturn.status === "cancelled") {
+      throw new BusinessRuleException(
+        "SALE_RETURN.ALREADY_CANCELLED",
+        "Already cancelled",
+        `Sale return ${saleReturn.docNumber} was already cancelled.`,
+      );
+    }
+    if (saleReturn.status === "reversed") {
+      throw new BusinessRuleException(
+        "SALE_RETURN.ALREADY_REVERSED",
+        "Already reversed",
+        `Sale return ${saleReturn.docNumber} was already reversed.`,
+      );
+    }
+    if (saleReturn.status !== "posted") {
+      throw new BusinessRuleException(
+        "SALE_RETURN.NOT_POSTED",
+        "Return not posted",
+        `Sale return ${saleReturn.docNumber} is "${saleReturn.status}"; only a posted return can be cancelled or reversed.`,
+      );
+    }
+  }
+
+  /**
+   * `cancel`'s own guard -- see that method's header comment for the full reasoning on WHY this
+   * check exists and what it is standing in for.
+   *
+   * Implementation: for every distinct (branch, item, stock lot) this return's own lines touched,
+   * find this return's own highest `stock_movement_id` against that exact lot (there can be more
+   * than one, if two of this return's lines happened to slice from the same lot), then -- after
+   * taking the `stock_balance` row's `FOR UPDATE` lock, ascending `stock_lot_id` (TX-6
+   * deterministic order) -- count how many OTHER `stock_movement` rows exist for that lot with a
+   * strictly higher id. `stock_movement` is append-only and its surrogate id is a strictly
+   * increasing sequence (schema comment: "Corrections are compensating rows ... never edits"), so
+   * "a row with a higher id exists" is an exact, race-free answer to "has anything touched this
+   * lot since this return posted" -- no separate timestamp comparison or snapshot column needed.
+   * Any count > 0 throws `422 SALE_RETURN.STOCK_ALREADY_MOVED`, directing the caller at `reverse`.
+   *
+   * Why THIS check and not a `qty_on_hand` comparison ("does the lot still have at least what this
+   * return added"): a pure quantity check is strictly WEAKER than what `StockService.applyMovement`
+   * itself already guarantees for free the moment the reversal actually runs (its own `FOR UPDATE`
+   * + non-negativity guard rejects an impossible reversal regardless of which endpoint attempted
+   * it) -- so a quantity-only pre-check here would just duplicate that guard under a friendlier
+   * error code, WITHOUT giving `cancel` any behaviour genuinely distinct from `reverse`. This
+   * ledger-order check is what actually earns "reverse when cancel refuses" as a real, observable
+   * difference (verified live, not just typechecked): if, say, a stock adjustment lands on the
+   * same lot afterwards and then gets reversed itself, netting `qty_on_hand` back to unchanged, a
+   * quantity check would wave `cancel` through even though something DID happen to this lot in the
+   * interim -- exactly the ambiguity "a clean cancel" is supposed to rule out. `reverse` is not
+   * held to this stricter bar (by design -- see `reverse`'s own comment): it only needs the lot to
+   * physically have enough on hand right now, which `applyMovement`'s own guard already enforces.
+   *
+   * (`stock_balance.last_movement_id` would answer a similar question directly off the balance
+   * projection, but is declared in the schema and never actually populated by
+   * `StockService.applyMovement` anywhere in this codebase today -- verified by reading
+   * `applyMovement`, whose balance-row update only ever sets `qty_on_hand`/`last_movement_at` --
+   * so this reads the ledger table itself instead of relying on that column.)
+   */
+  private async assertStockUntouchedSinceReturn(tx: Tx, saleReturn: SaleReturnRow, lines: SaleReturnLineRow[]): Promise<void> {
+    const lotKeyOf = (branchId: number, itemId: number, stockLotId: number) => `${branchId}:${itemId}:${stockLotId}`;
+    const distinctLots = new Map<string, { branchId: number; itemId: number; stockLotId: number }>();
+    for (const line of lines) {
+      const key = lotKeyOf(line.branchId, line.itemId, line.stockLotId);
+      if (!distinctLots.has(key)) distinctLots.set(key, { branchId: line.branchId, itemId: line.itemId, stockLotId: line.stockLotId });
+    }
+
+    const sortedLots = [...distinctLots.values()].sort((a, b) => a.stockLotId - b.stockLotId);
+    for (const lot of sortedLots) {
+      // Lock the balance row FIRST -- from here until the transaction commits (either this guard
+      // throwing and rolling back, or `voidPostedReturn`'s own `applyMovement` call later in the
+      // same transaction), no concurrent writer can insert a new movement against this lot, so the
+      // "any newer movement?" read below cannot be raced.
+      await tx
+        .select()
+        .from(stockBalances)
+        .where(
+          and(
+            eq(stockBalances.branchId, lot.branchId),
+            eq(stockBalances.itemId, lot.itemId),
+            eq(stockBalances.stockLotId, lot.stockLotId),
+          ),
+        )
+        .for("update");
+
+      const [ownMovement] = await tx
+        .select({ maxId: sql<number | null>`max(${stockMovements.stockMovementId})` })
+        .from(stockMovements)
+        .where(
+          and(
+            eq(stockMovements.tenantId, saleReturn.tenantId),
+            eq(stockMovements.documentTypeId, saleReturn.documentTypeId),
+            eq(stockMovements.sourceDocumentId, saleReturn.saleReturnId),
+            eq(stockMovements.branchId, lot.branchId),
+            eq(stockMovements.itemId, lot.itemId),
+            eq(stockMovements.stockLotId, lot.stockLotId),
+          ),
+        );
+      const ownMaxId = ownMovement?.maxId;
+      if (ownMaxId === null || ownMaxId === undefined) {
+        // Unreachable -- createAndPost always posts exactly one stock_movement per line before a
+        // sale_return can ever reach "posted" (assertVoidable already required that to get here).
+        throw new Error(`sale return ${saleReturn.saleReturnId} has no recorded movement for lot ${lot.stockLotId}`);
+      }
+
+      const [later] = await tx
+        .select({ n: sql<number>`count(*)` })
+        .from(stockMovements)
+        .where(
+          and(
+            eq(stockMovements.tenantId, saleReturn.tenantId),
+            eq(stockMovements.branchId, lot.branchId),
+            eq(stockMovements.itemId, lot.itemId),
+            eq(stockMovements.stockLotId, lot.stockLotId),
+            gt(stockMovements.stockMovementId, ownMaxId),
+          ),
+        );
+      if ((later?.n ?? 0) > 0) {
+        throw new BusinessRuleException(
+          "SALE_RETURN.STOCK_ALREADY_MOVED",
+          "Stock already moved -- cannot cleanly cancel",
+          `Lot ${lot.stockLotId} has had other stock activity since this return posted (${later?.n ?? 0} later movement(s)) -- this return's own contribution can no longer be cleanly undone. Reverse this return instead of cancelling it.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Shared voiding mechanics for `cancel`/`reverse` -- structural mirror of sale-
+   * invoices.service.ts's `voidPostedInvoice`. Once the caller's own guard has passed
+   * (`assertVoidable`, and `cancel`'s own `assertStockUntouchedSinceReturn`), both verbs do
+   * exactly the same thing: reverse every stock movement this return posted, reverse its GL
+   * journal entry, flip status. They differ only in the resulting status, whether
+   * `cancelledAt`/`cancelledBy`/`cancelReasonId` get stamped, and the journal entry-number
+   * suffix/description/default reason text -- same reasoning sale-invoices.service.ts's own
+   * `voidPostedInvoice` documents for why there was nothing left for the two verbs to differ on.
+   *
+   * Stock: for every `sale_return_line`, post a movement with the SAME lot/unit-cost the return
+   * used, `-qtyBase` instead of the original `+qtyBase` -- taking the exact goods back OUT. This
+   * is the mirror image of sale-invoices.service.ts's own void (which posts `+qtyBase`, INBOUND,
+   * because a sale invoice's original movement was outbound) -- consistent with this file's own
+   * header comment describing a sale return as "the reverse-direction sibling" of a cash sale.
+   * Goes through `StockService.applyMovement`'s ordinary `FOR UPDATE` + non-negativity guard
+   * exactly like any other outbound movement in this codebase; `cancel`'s own pre-check makes that
+   * guard a formality in the common case, `reverse` has no pre-check so it can still legitimately
+   * trip here (see `reverse`'s own comment). `sourceLineId` IS set here (unlike `createAndPost`'s
+   * own inbound movement, whose own comment explains the line doesn't exist yet at that point) --
+   * the line already exists by the time cancel/reverse run, exactly like sale-
+   * invoices.service.ts's own void does for its lines.
+   *
+   * GL: reads back the ORIGINAL journal_line rows for `saleReturn.journalEntryId` and swaps
+   * debit<->credit on each verbatim -- same technique and reasoning as sale-invoices.service.ts's
+   * `voidPostedInvoice` (trivially balances, provably faithful to whatever `createAndPost`
+   * actually posted -- including the return's conditional COGS legs -- with no separate formula to
+   * keep in sync).
+   */
+  private async voidPostedReturn(
+    tx: Tx,
+    params: {
+      saleReturn: SaleReturnRow;
+      lines: SaleReturnLineRow[];
+      tenantId: number;
+      branchId: number;
+      actorId: number;
+      outcome: "cancelled" | "reversed";
+      reason: string;
+      cancelReasonId: number | null;
+    },
+  ): Promise<{ saleReturn: SaleReturnRow; lines: SaleReturnLineRow[] }> {
+    const { saleReturn, lines, tenantId, branchId, actorId, outcome, reason, cancelReasonId } = params;
+
+    // "Today", not the original return's own postingDate -- this is when the void actually
+    // happens and needs its own OPEN fiscal period (the original period may have since closed),
+    // same reasoning sale-invoices.service.ts's own voidPostedInvoice documents.
+    const voidDate = localToday();
+    const fiscalPeriodId = await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, voidDate);
+
+    // -- reverse stock: pull every returned line's quantity back OUT of its own original lot ----
+    for (const line of lines) {
+      await this.stock.applyMovement(tx, {
+        tenantId,
+        branchId: line.branchId,
+        itemId: line.itemId,
+        stockLotId: line.stockLotId,
+        qtyDelta: Quantity.zero().sub(Quantity.fromDb(line.qtyBase)).toDb(), // negative -- mirror image of the return's own inbound movement
+        unitCost: line.unitCost, // the line's own frozen cost, never the item's current avg
+        documentTypeId: saleReturn.documentTypeId,
+        sourceDocumentId: saleReturn.saleReturnId,
+        sourceLineId: line.saleReturnLineId,
+        fiscalPeriodId,
+        postingDate: voidDate,
+        actorId,
+      });
+    }
+
+    // -- reverse the GL: swap every original leg's debit/credit side, post as a new entry -------
+    if (saleReturn.journalEntryId === null) {
+      // Unreachable -- createAndPost always posts a journal entry and binds journalEntryId before
+      // the header's status can ever become "posted" (assertVoidable already required status ===
+      // "posted" to get here).
+      throw new Error(`posted sale return ${saleReturn.saleReturnId} has no journal entry`);
+    }
+    const originalLines = await tx
+      .select()
+      .from(journalLines)
+      .where(eq(journalLines.journalEntryId, saleReturn.journalEntryId))
+      .orderBy(asc(journalLines.lineNo));
+    const legs: JournalLegInput[] = originalLines.map((l) => {
+      const wasDebit = !Money.fromDb(l.debitAmount).isZero();
+      return {
+        glAccountId: l.glAccountId,
+        ...(wasDebit ? { credit: l.debitAmount } : { debit: l.creditAmount }),
+        legRole: l.legRole,
+        ...(l.supplierId !== null ? { supplierId: l.supplierId } : {}),
+        ...(l.customerId !== null ? { customerId: l.customerId } : {}),
+        ...(l.analysisAccountId !== null ? { analysisAccountId: l.analysisAccountId } : {}),
+        ...(l.memo !== null ? { memo: l.memo } : {}),
+      };
+    });
+
+    const [priorSeq] = await tx
+      .select({ maxSeq: sql<number>`coalesce(max(${journalEntries.reversalSeq}), 0)` })
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.tenantId, tenantId),
+          eq(journalEntries.documentTypeCode, "SR"),
+          eq(journalEntries.sourceDocumentId, saleReturn.saleReturnId),
+        ),
+      );
+    const reversalSeq = (priorSeq?.maxSeq ?? 0) + 1;
+
+    const suffix = outcome === "cancelled" ? "CANCEL" : "REVERSE";
+    await this.journal.post(tx, {
+      tenantId,
+      branchId,
+      entryNo: `${saleReturn.docNumber}-${suffix}`,
+      entryDate: voidDate,
+      documentTypeCode: "SR",
+      sourceDocumentId: saleReturn.saleReturnId,
+      description: `${outcome === "cancelled" ? "Cancellation" : "Reversal"} of sale return ${saleReturn.docNumber}`,
+      legs,
+      postedBy: actorId,
+      reversalSeq,
+      reversalOfJournalId: saleReturn.journalEntryId,
+      reversalReason: reason,
+    });
+    await tx
+      .update(journalEntries)
+      .set({ status: "reversed", updatedBy: actorId })
+      .where(eq(journalEntries.journalEntryId, saleReturn.journalEntryId));
+
+    // -- flip the header's own status -------------------------------------------------------------
+    await tx
+      .update(saleReturns)
+      .set(
+        outcome === "cancelled"
+          ? { status: "cancelled", cancelledAt: new Date(), cancelledBy: actorId, cancelReasonId, updatedBy: actorId }
+          : { status: "reversed", updatedBy: actorId },
+      )
+      .where(eq(saleReturns.saleReturnId, saleReturn.saleReturnId));
+
+    const [updated] = await tx.select().from(saleReturns).where(eq(saleReturns.saleReturnId, saleReturn.saleReturnId));
+    if (!updated) throw new Error("sale return vanished mid-transaction"); // unreachable; defensive
+    return { saleReturn: updated, lines };
   }
 
   // ---- helpers ------------------------------------------------------------------------------

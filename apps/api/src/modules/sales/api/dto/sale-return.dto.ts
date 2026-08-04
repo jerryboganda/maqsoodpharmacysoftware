@@ -56,3 +56,36 @@ export class CreateSaleReturnDto extends createZodDto(CreateSaleReturnSchema) {}
 
 export type SaleReturnLineInput = z.infer<typeof SaleReturnLineInputSchema>;
 export type CreateSaleReturnInput = z.infer<typeof CreateSaleReturnSchema>;
+
+/**
+ * POST /sale-returns/lookup-invoice -- read-only search (18-api-plan.md §"Sale returns" row:
+ * `POST /api/v1/sale-returns/lookup-invoice`, "n/a (read-only POST)", `E-READ`), so this carries
+ * no idempotency key requirement (see the controller). `docNumber` only, exact match: this
+ * codebase's own doc-number lookups elsewhere (sale-invoices.service.ts's/purchase-
+ * return.service.ts's own invoice/line joins) are all exact-id/exact-docNumber, never
+ * partial/LIKE, and the api-plan's alternative identifiers (`fiscalInvoiceNo`, `barcode`) have no
+ * column on `sale_invoice` in this codebase today, so only `docNumber` is implemented.
+ */
+export const LookupInvoiceSchema = z.object({
+  docNumber: z.string().min(1).max(32),
+});
+export class LookupInvoiceDto extends createZodDto(LookupInvoiceSchema) {}
+export type LookupInvoiceInput = z.infer<typeof LookupInvoiceSchema>;
+
+/** POST /sale-returns/:id/cancel -- mirrors CancelSaleInvoiceSchema (sale-invoice.dto.ts)
+ *  verbatim: an optional structured `cancelReasonId` (-> `option_item`, list `cancel_reason`) plus
+ *  a free-text `reason` that becomes the reversing journal entry's `reversalReason`. */
+export const CancelSaleReturnSchema = z.object({
+  cancelReasonId: z.number().int().positive().optional(),
+  reason: z.string().min(1).max(500).optional(),
+});
+export class CancelSaleReturnDto extends createZodDto(CancelSaleReturnSchema) {}
+export type CancelSaleReturnInput = z.infer<typeof CancelSaleReturnSchema>;
+
+/** POST /sale-returns/:id/reverse -- mirrors ReverseSaleInvoiceSchema verbatim: no
+ *  `cancelReasonId` (a reversal is not a cancellation), only `reason`. */
+export const ReverseSaleReturnSchema = z.object({
+  reason: z.string().min(1).max(500).optional(),
+});
+export class ReverseSaleReturnDto extends createZodDto(ReverseSaleReturnSchema) {}
+export type ReverseSaleReturnInput = z.infer<typeof ReverseSaleReturnSchema>;

@@ -56,4 +56,30 @@ export const CreateSaleInvoiceSchema = z.object({
   invoiceDiscountAmount: zDecimalString("invoiceDiscountAmount").optional(),
   notes: z.string().max(1000).optional(),
 });
+/** POST /sale-invoices AND POST /sale-invoices/preview share this exact body shape -- a preview
+ *  is "the same would-be sale", just not written (SaleInvoicesService.preview reuses
+ *  createCashSale's own computeSale() rather than a parallel DTO). */
 export class CreateSaleInvoiceDto extends createZodDto(CreateSaleInvoiceSchema) {}
+
+/** POST /sale-invoices/:id/cancel -- only reachable when no `sale_return` already references this
+ *  invoice (SaleInvoicesService.cancel's own 422 otherwise -- use reverse instead). Mirrors
+ *  payments/api/dto/payment.dto.ts's CancelPaymentSchema shape exactly: `reason` is accepted for
+ *  the audit trail / journal reversalReason, `cancelReasonId` is a soft-ref option-list id (list
+ *  `cancel_reason`, not validated against that list this increment -- same treatment
+ *  CancelPaymentSchema documents for its own identical field). */
+export const CancelSaleInvoiceSchema = z.object({
+  cancelReasonId: z.number().int().positive().optional(),
+  reason: z.string().min(1).max(500).optional(),
+});
+export class CancelSaleInvoiceDto extends createZodDto(CancelSaleInvoiceSchema) {}
+export type CancelSaleInvoiceInput = z.infer<typeof CancelSaleInvoiceSchema>;
+
+/** POST /sale-invoices/:id/reverse -- an unconditional compensating entry, reachable even when a
+ *  sale_return already references the invoice (unlike cancel). No `cancelReasonId` -- a reversal
+ *  is not a cancellation; only `reason` (-> the reversing journal entry's `reversalReason`)
+ *  applies. */
+export const ReverseSaleInvoiceSchema = z.object({
+  reason: z.string().min(1).max(500).optional(),
+});
+export class ReverseSaleInvoiceDto extends createZodDto(ReverseSaleInvoiceSchema) {}
+export type ReverseSaleInvoiceInput = z.infer<typeof ReverseSaleInvoiceSchema>;
