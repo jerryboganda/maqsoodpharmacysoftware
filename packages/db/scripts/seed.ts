@@ -1027,8 +1027,13 @@ const DEV_ITEMS = [
   { customCode: "ORS200", name: "ORS Sachet", packUnits: 1, salePrice: "30.0000", purchasePrice: "22.0000", hasExpiry: true },
 ] as const;
 
+// Module-scoped (not a local `main()` const) so `main().catch()` below can close it on a throw
+// too -- see that handler's comment for why this half of the fix matters as much as the block 2
+// guard fix above did.
+let pool: ReturnType<typeof createDbPool> | undefined;
+
 async function main(): Promise<void> {
-  const pool = createDbPool();
+  pool = createDbPool();
   const db = createDb(pool);
 
   // ---- Block 1: tenant / branch / roles / dev.owner / option lists ----------------------------
@@ -1283,23 +1288,30 @@ async function main(): Promise<void> {
   }
 
   // ---- Block 2: docflow / GL chart / payments / categories / parties / items ------------------
-  // Separately guarded (document_type SALE for the dev tenant) so this block can top up a
-  // database that was seeded by the older, block-1-only shape of this script. Document
-  // types/series/counters themselves are now seeded by Block 1c above (per-row idempotent), not
-  // here -- everything else in this block (GL chart, fiscal periods, parties, items, categories)
-  // is far less likely to grow incrementally wave-over-wave than DOC_TYPES is, so widening this
-  // block's own guard to match is left as a follow-up, not silently assumed unnecessary.
+  // Separately guarded so this block can top up a database that was seeded by the older,
+  // block-1-only shape of this script. Document types/series/counters themselves are now seeded
+  // by Block 1c above (per-row idempotent), not here -- everything else in this block (GL chart,
+  // fiscal periods, parties, items, categories) is far less likely to grow incrementally
+  // wave-over-wave than DOC_TYPES is, so widening this block's own guard to match is left as a
+  // follow-up, not silently assumed unnecessary.
   const tenantId = tenantForDocTypes.tenantId;
 
-  const existingDocflow = await db
-    .select({ documentTypeId: documentTypes.documentTypeId })
-    .from(documentTypes)
-    .where(and(eq(documentTypes.tenantId, tenantId), eq(documentTypes.code, "SALE")));
-  // Bug fix (same class as block 1b/1c, a third time -- see this file's header comment): this used
-  // to `await pool.end(); return;` here, which silently skipped every block below it (including
-  // this wave's own Block 2b) on any already-seeded database. Skip only Block 2's OWN transaction
-  // now; execution -- and the pool -- stay alive so later always-runs, per-row-idempotent blocks
-  // still get a chance to top up whatever they individually own.
+  // Bug fix, found during Wave 5 integration by reproducing the CI job's fresh-database seed step
+  // locally: this guard used to check `document_type` for code "SALE" -- but Block 1c (doc types)
+  // now runs BEFORE this block and always inserts "SALE" itself, so the guard saw "already
+  // seeded" on every run, including a genuinely FRESH database, and Block 2 (fiscal years/
+  // periods, the GL chart of accounts, parties, items) silently never ran in CI since whatever
+  // wave first reordered Block 1c ahead of this guard (Wave 4). This was invisible until Wave 5's
+  // Block 2b started throwing on the missing GL chart it depends on -- and even then, the
+  // resulting uncaught error hung the CI job indefinitely instead of failing fast, because
+  // `pool.end()` (bottom of `main()`) is never reached on a throw; see main().catch() below for
+  // that half of the fix. Guard on `fiscal_year` (this block's own first insert, at
+  // `code: FY_CODE`, in the same transaction as everything else below) instead -- a table no
+  // other block touches, so it can only be non-empty if this exact transaction already committed.
+  const existingDocflow = await db.select({ fiscalYearId: fiscalYears.fiscalYearId }).from(fiscalYears).where(and(eq(fiscalYears.tenantId, tenantId), eq(fiscalYears.code, FY_CODE)));
+  // Skip only Block 2's OWN transaction on a hit; execution -- and the pool -- stay alive so
+  // later always-runs, per-row-idempotent blocks still get a chance to top up whatever they
+  // individually own (same lesson as the block 1b/1c bug fixes referenced in this file's header).
   if (existingDocflow.length > 0) {
     console.log("Posting fixtures already seeded -- skipping block 2.");
   } else {
@@ -1571,7 +1583,16 @@ async function main(): Promise<void> {
   await pool.end();
 }
 
-main().catch((error: unknown) => {
+main().catch(async (error: unknown) => {
   console.error("Seed failed:", error);
   process.exitCode = 1;
+  // Bug fix, found during Wave 5 integration: `pool.end()` previously only ran at the very
+  // bottom of `main()`'s success path, so any thrown error (like Block 2b's "GL main E is
+  // missing" -- itself caused by the Block 2 guard bug fixed above) left the mysql2 pool's open
+  // connections keeping the Node process alive forever instead of exiting with code 1. Locally
+  // this meant the seed script hung until manually killed; in CI it hung the whole job until the
+  // runner's own timeout, with no error visible in the log tail. Always close the pool on the
+  // error path too, then exit explicitly so a real failure fails fast and loud.
+  if (pool) await pool.end();
+  process.exit(1);
 });
