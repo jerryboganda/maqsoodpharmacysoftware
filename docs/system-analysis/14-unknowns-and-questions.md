@@ -381,7 +381,7 @@ Everything else in this register can be answered while building. These 27 cannot
 | **U-049** | Do the packs and scanners support GS1 2D scan-to-fill? | **R4 (D12, Tier-1) may be undeliverable as designed** — discover now, not in P3 | owner + pharmacist |
 | **U-060** | Which FBR regime applies: POS or Digital Invoicing | Statutory scope of P2 | tax adviser + owner |
 | **U-061** | Is `055-3252501` a tax number or a phone number? | Trivial to answer, serious if wrong; used as a tax identifier | owner |
-| **U-062** | DRAP / controlled-drug obligations — **never analysed** | An unexamined regulatory dimension in a pharmacy rebuild | owner + pharmacist |
+| **U-062** | DRAP / controlled-drug obligations — initial research done (R7); **Wave 8 (2026‑08‑05) built the generic record-keeping infrastructure** (branch licence tracking + reminder, optional point-of-sale dispensing note, Controlled Drug Register report) **but the actual legal register/retention/countersignature requirements are still unconfirmed** | An unexamined regulatory dimension in a pharmacy rebuild | owner + pharmacist |
 | **U-065** | 19,642 unfiscalised 2025 sale returns | A live statutory exposure the owner must be told about | tax adviser + owner |
 | **U-074** | Zero invoice-level sales tax on all 291,361 invoices — correct? | Foundational to every tax figure in the system | tax adviser |
 | **U-076** | Vendor contract / IP / data-ownership rights | A legal precondition for the whole project | owner |
@@ -487,7 +487,7 @@ Everything else in this register can be answered while building. These 27 cannot
 
 29. **The number "055-3252501" is stored in your software as your tax registration number.** It looks more like a Gujranwala telephone number. Could you read us your actual NTN and STRN from the certificate? *(U-061)*
 
-30. **Are there any records the drug regulator requires you to keep** — a controlled-medicines register, prescription records, a pharmacist's signature on certain sales, licence renewal dates? We found nothing about this anywhere in your current software, so we need to know whether the new system should handle it. *(U-062)*
+30. **Are there any records the drug regulator requires you to keep** — a controlled-medicines register, prescription records, a pharmacist's signature on certain sales, licence renewal dates? We found nothing about this anywhere in your current software (the new system now has a place to record whatever you tell us is required — see Wave 8 — but we still need your pharmacist or a regulatory consultant to confirm what that actually is). *(U-062)*
 
 31. **About 19,600 of your 2025 refund receipts were never sent to the tax authority, and 439 sale invoices were never sent either.** Your tax adviser should tell us whether anything needs to be corrected. We are raising it because you should know, not because it affects the rebuild. *(U-065)*
 
