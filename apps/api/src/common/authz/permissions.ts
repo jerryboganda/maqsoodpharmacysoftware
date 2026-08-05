@@ -66,6 +66,11 @@ export const ACTION_KEYS = [
   // `purchase.order`'s existing close/cancel split above).
   "count",
   "generate_adjustments",
+  // Wave 9 (R-013): `accounting.fiscal_period:reopen` -- the inverse of the already-existing
+  // "close" verb. Distinct from "cancel"/"reverse" (this isn't undoing a document, it's flipping
+  // a period's own status back), and distinct from a generic "edit" (a period's dates/key are not
+  // editable via either action -- only the status transition is).
+  "reopen",
 ] as const;
 
 export type ActionKey = (typeof ACTION_KEYS)[number];

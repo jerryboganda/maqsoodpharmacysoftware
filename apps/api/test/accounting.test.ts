@@ -110,6 +110,16 @@ interface GlAccountLedgerResponse {
   total: number;
 }
 
+interface FiscalPeriodRow {
+  fiscalPeriodId: number;
+  periodKey: string;
+  startDate: string; // ISO timestamp on the wire (Date column, no dedicated formatter -- see this file's own test 7)
+  endDate: string;
+  status: "open" | "soft_closed" | "closed";
+  closedAt: string | null;
+  closedBy: number | null;
+}
+
 /** A date safely inside the seeded FY2027 fiscal year (2026-07-01..2027-06-30, all months open --
  *  seed.ts FY_START/FY_END/FISCAL_MONTHS), independent of whatever "today" happens to be. Same
  *  constant purchasing.test.ts/sales.test.ts use for the identical reason. */
@@ -275,6 +285,7 @@ async function countTenantJournalEntries(tenantId: number): Promise<number> {
 
 describe("accounting module: GL chart of accounts, manual vouchers, cash & bank", () => {
   let testApp: TestApp;
+  let owner: LoggedInUser; // holds accounting.fiscal_period:list but NOT :close/:reopen (accountant-only) -- used for a real 403 check
   let accountant: LoggedInUser; // holds gl.account/gl.ledger view+list, gl.voucher create/reverse, cash_bank create (seed.ts's §I.4 grants) -- see this file's header comment
   let tenantId: number;
   let cashGlAccountId: number; // GL 1000 "Cash in Hand", debit-normal, bound to MAIN_CASH
@@ -287,7 +298,7 @@ describe("accounting module: GL chart of accounts, manual vouchers, cash & bank"
 
   beforeAll(async () => {
     testApp = await createTestApp();
-    const owner = await loginAsOwner(testApp);
+    owner = await loginAsOwner(testApp);
     accountant = await createTestUser(testApp, owner.token, ["accountant"]);
     tenantId = await getUserTenantId(accountant.userId);
 
@@ -540,5 +551,148 @@ describe("accounting module: GL chart of accounts, manual vouchers, cash & bank"
     expect(res.status).toBe(422);
     expect(res.json.code).toBe("CASH_BANK.SAME_ACCOUNT");
     expect(await countTenantJournalEntries(tenantId)).toBe(beforeCount);
+  });
+
+  it("7. GET /fiscal-periods lists the real seeded periods, and posting a voucher dated EXACTLY on a period's own endDate succeeds -- the regression guard for resolveOpenPeriod's real Date-serialization bug (Wave 9)", async () => {
+    const listRes = await request<FiscalPeriodRow[]>(testApp, { method: "GET", url: "/fiscal-periods", token: accountant.token });
+    expect(listRes.status, JSON.stringify(listRes.json)).toBe(200);
+    const period = listRes.json.find((p) => p.periodKey === "2026-08");
+    expect(period).toBeDefined();
+    expect(period!.status).toBe("open");
+
+    // ISO timestamp -> plain YYYY-MM-DD -- safe here specifically because the source is a DATE
+    // column with no time-of-day component (same reasoning report-helpers.ts's toDateOnly/
+    // settings.service.ts's toDateOnlyOrNull already document for the identical wire shape).
+    const lastDayOfPeriod = period!.endDate.slice(0, 10);
+    expect(lastDayOfPeriod).toBe("2026-08-31");
+
+    // Before the Wave 9 fix, resolveOpenPeriod's own gte/lte query silently rejected a
+    // postingDate exactly equal to the period's endDate -- confirmed live via .toSQL() + a real
+    // query under TZ=UTC before writing this fix (see business-date.ts's businessDateParam doc
+    // comment). This is the live, end-to-end proof it's actually fixed, not just unit-verified.
+    const res = await request<CreateJournalEntryResponse>(testApp, {
+      method: "POST",
+      url: "/gl/journal-entries",
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {
+        voucherCategoryId: jvCategoryId,
+        documentDate: lastDayOfPeriod,
+        postingDate: lastDayOfPeriod,
+        narration: "Accounting test voucher -- period boundary regression guard",
+        lines: [
+          { glAccountId: testGlAccountId, debit: "10.00" },
+          { glAccountId: cashGlAccountId, credit: "10.00" },
+        ],
+      },
+    });
+    expect(res.status, JSON.stringify(res.json)).toBe(201);
+    expect(res.json.entry.status).toBe("posted");
+  });
+
+  it("8. POST /fiscal-periods/:id/close blocks a new posting into that period, a non-accountant is 403'd, and POST .../reopen restores posting -- a real round trip left back exactly as found", async () => {
+    // A period far from "today" (2026-08-05) and from DOC_DATE (2026-08-15), so this test can
+    // never race or interfere with any other file's own `localToday()`-dated postings.
+    const listRes = await request<FiscalPeriodRow[]>(testApp, { method: "GET", url: "/fiscal-periods", token: accountant.token });
+    const target = listRes.json.find((p) => p.periodKey === "2027-06");
+    expect(target).toBeDefined();
+    expect(target!.status).toBe("open");
+    const targetDate = target!.endDate.slice(0, 10);
+    expect(targetDate).toBe("2027-06-30");
+
+    // -- owner lacks accounting.fiscal_period:close/:reopen (accountant-only, seed.ts) -- real 403 --
+    const forbidden = await request<ProblemResponseBody>(testApp, {
+      method: "POST",
+      url: `/fiscal-periods/${target!.fiscalPeriodId}/close`,
+      token: owner.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {},
+    });
+    expect(forbidden.status).toBe(403);
+
+    // -- accountant closes it for real --
+    const closeRes = await request<FiscalPeriodRow>(testApp, {
+      method: "POST",
+      url: `/fiscal-periods/${target!.fiscalPeriodId}/close`,
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {},
+    });
+    expect(closeRes.status, JSON.stringify(closeRes.json)).toBe(200);
+    expect(closeRes.json.status).toBe("closed");
+    expect(closeRes.json.closedBy).toBe(accountant.userId);
+
+    // -- closing it again 422s (state guard, not a silent no-op) --
+    const closeAgain = await request<ProblemResponseBody>(testApp, {
+      method: "POST",
+      url: `/fiscal-periods/${target!.fiscalPeriodId}/close`,
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {},
+    });
+    expect(closeAgain.status).toBe(422);
+    expect(closeAgain.json.code).toBe("PERIOD.ALREADY_CLOSED");
+
+    // -- a new posting dated into the now-closed period is really blocked --
+    const blockedPost = await request<ProblemResponseBody>(testApp, {
+      method: "POST",
+      url: "/gl/journal-entries",
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {
+        voucherCategoryId: jvCategoryId,
+        documentDate: targetDate,
+        postingDate: targetDate,
+        narration: "Should be blocked -- period closed",
+        lines: [
+          { glAccountId: testGlAccountId, debit: "1.00" },
+          { glAccountId: cashGlAccountId, credit: "1.00" },
+        ],
+      },
+    });
+    expect(blockedPost.status).toBe(422);
+    expect(blockedPost.json.code).toBe("PERIOD.CLOSED");
+
+    // -- reopen restores it, and posting works again --
+    const reopenRes = await request<FiscalPeriodRow>(testApp, {
+      method: "POST",
+      url: `/fiscal-periods/${target!.fiscalPeriodId}/reopen`,
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {},
+    });
+    expect(reopenRes.status, JSON.stringify(reopenRes.json)).toBe(200);
+    expect(reopenRes.json.status).toBe("open");
+    expect(reopenRes.json.closedAt).toBeNull();
+    expect(reopenRes.json.closedBy).toBeNull();
+
+    const postAfterReopen = await request<CreateJournalEntryResponse>(testApp, {
+      method: "POST",
+      url: "/gl/journal-entries",
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {
+        voucherCategoryId: jvCategoryId,
+        documentDate: targetDate,
+        postingDate: targetDate,
+        narration: "Should succeed -- period reopened",
+        lines: [
+          { glAccountId: testGlAccountId, debit: "1.00" },
+          { glAccountId: cashGlAccountId, credit: "1.00" },
+        ],
+      },
+    });
+    expect(postAfterReopen.status, JSON.stringify(postAfterReopen.json)).toBe(201);
+
+    // -- reopening an already-open period 422s too --
+    const reopenAgain = await request<ProblemResponseBody>(testApp, {
+      method: "POST",
+      url: `/fiscal-periods/${target!.fiscalPeriodId}/reopen`,
+      token: accountant.token,
+      idempotencyKey: newIdempotencyKey(),
+      body: {},
+    });
+    expect(reopenAgain.status).toBe(422);
+    expect(reopenAgain.json.code).toBe("PERIOD.NOT_CLOSED");
   });
 });

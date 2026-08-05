@@ -34,3 +34,38 @@ export function localToday(): string {
   // no risk of the assembly itself reintroducing a UTC/local mismatch.
   return businessDateFormatter.format(new Date());
 }
+
+/**
+ * For a Drizzle `gte`/`lte`/`eq` comparison against a `date()`-mode column -- deliberately NOT a
+ * plain `new Date(...)`. This is a SEPARATE bug from the one this file's own header comment
+ * documents (that one is about reading "now" in the wrong timezone; this one is about how
+ * Drizzle's mysql2 adapter serializes a JS `Date` object into a SQL parameter for a date-column
+ * comparison, and reproduces under ANY server timezone including Asia/Karachi itself).
+ *
+ * Root cause (confirmed live via `.toSQL()` + a real query, not guessed): passing a JS `Date`
+ * into a `gte`/`lte`/`eq` filter against a `date()`-mode column serializes that Date via
+ * `.toISOString()` -- e.g. `"2026-08-31T00:00:00.000Z"` -- as the literal SQL parameter. MySQL's
+ * implicit string-to-DATE coercion does not reliably treat that ISO-with-"T"/"Z" string as
+ * exactly equal to the plain date it represents: an `eq()` filter against it matches ZERO rows
+ * even for a column that genuinely holds that exact date, and a `gte`/`lte` RANGE filter using it
+ * matches most dates "by luck" (the malformed string still sorts approximately correctly) but
+ * fails EXACTLY at a range boundary -- confirmed live: `common/docflow/fiscal-period.service.ts`'s
+ * `resolveOpenPeriod` silently rejected a posting date equal to a fiscal period's own `endDate`
+ * (i.e. the last calendar day of every month), throwing 422 `PERIOD.CLOSED`-adjacent
+ * `PERIOD.NOT_CONFIGURED` for a date that IS configured -- a real, previously-undetected
+ * production defect discovered while building Wave 9's fiscal-period close/reopen endpoints. This
+ * is the same underlying serialization bug already fixed independently in
+ * `reporting/application/report-helpers.ts`'s `businessDateParam` and
+ * `notifications/application/notification.service.ts`'s `dateOnlyParam` -- promoted here as the
+ * one shared, canonical version for `common/` code (docflow, and any future common-layer date
+ * filter) to use, rather than a third private duplicate.
+ *
+ * The `as unknown as Date` cast is deliberate: Drizzle's own TypeScript types require a `Date`
+ * argument here (matching the column's SELECT-side type), but its ACTUAL runtime SQL parameter
+ * serialization is exactly right for a plain string and exactly wrong for a real Date object --
+ * the cast documents that this is intentionally fighting the type system to get the CORRECT
+ * runtime behavior, not an oversight.
+ */
+export function businessDateParam(dateStr: string): Date {
+  return dateStr as unknown as Date;
+}

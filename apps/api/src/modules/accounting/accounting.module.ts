@@ -17,6 +17,7 @@ import { Module } from "@nestjs/common";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
 import { CashBankAccountsController } from "./api/cash-bank-accounts.controller.js";
 import { CashBankController } from "./api/cash-bank.controller.js";
+import { FiscalPeriodsController } from "./api/fiscal-periods.controller.js";
 import { GlAccountsController } from "./api/gl-accounts.controller.js";
 import { JournalEntriesController } from "./api/journal-entries.controller.js";
 import { CashBankService } from "./application/cash-bank.service.js";
@@ -24,8 +25,11 @@ import { GlAccountService } from "./application/gl-account.service.js";
 import { JournalEntryService } from "./application/journal-entry.service.js";
 import { LedgerQueryService } from "./application/ledger-query.service.js";
 
+// FiscalPeriodService (used by FiscalPeriodsController above) comes from the globally-provided
+// DocflowModule -- same "no import needed here" reasoning this file's own header comment already
+// documents for JournalService/DocNumberService.
 @Module({
-  controllers: [GlAccountsController, JournalEntriesController, CashBankAccountsController, CashBankController],
+  controllers: [GlAccountsController, JournalEntriesController, CashBankAccountsController, CashBankController, FiscalPeriodsController],
   providers: [GlAccountService, JournalEntryService, CashBankService, LedgerQueryService, TenantContextService],
   exports: [GlAccountService, JournalEntryService, CashBankService, LedgerQueryService],
 })

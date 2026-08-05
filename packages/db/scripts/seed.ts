@@ -951,6 +951,34 @@ const PERMISSIONS: ReadonlyArray<{
     isSensitive: true,
     roles: ["pharmacy_manager", "accountant"],
   },
+
+  // Wave 9 (R-013, CRITICAL -- 12-risks-gaps.md): `accounting.fiscal_period` list/close/reopen --
+  // the missing admin half of period control (the enforcement half, resolveOpenPeriod's own
+  // status check, already existed). Read-role set mirrors `gl.account`/`gl.voucher` exactly
+  // (owner/pharmacy_manager/accountant/auditor); close/reopen are accountant-only mutations, same
+  // precedent `gl.voucher` create/post/cancel/reverse already establishes for period-adjacent
+  // financial-control actions -- no explicit 09 §I.4 row exists for this either (the matrix
+  // predates a real period-close admin surface entirely).
+  {
+    resource: "accounting.fiscal_period",
+    action: "list",
+    name: "List fiscal periods",
+    roles: ["owner", "pharmacy_manager", "accountant", "auditor"],
+  },
+  {
+    resource: "accounting.fiscal_period",
+    action: "close",
+    name: "Close a fiscal period",
+    isSensitive: true,
+    roles: ["accountant"],
+  },
+  {
+    resource: "accounting.fiscal_period",
+    action: "reopen",
+    name: "Reopen a closed fiscal period",
+    isSensitive: true,
+    roles: ["accountant"],
+  },
 ];
 
 // Mirrors apps/api/src/modules/settings/infrastructure/options.repository.ts's former in-memory
