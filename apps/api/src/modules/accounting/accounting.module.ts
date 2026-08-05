@@ -20,6 +20,7 @@ import { CashBankController } from "./api/cash-bank.controller.js";
 import { FiscalPeriodsController } from "./api/fiscal-periods.controller.js";
 import { GlAccountsController } from "./api/gl-accounts.controller.js";
 import { JournalEntriesController } from "./api/journal-entries.controller.js";
+import { CashBankReconciliationService } from "./application/cash-bank-reconciliation.service.js";
 import { CashBankService } from "./application/cash-bank.service.js";
 import { GlAccountService } from "./application/gl-account.service.js";
 import { JournalEntryService } from "./application/journal-entry.service.js";
@@ -30,7 +31,7 @@ import { LedgerQueryService } from "./application/ledger-query.service.js";
 // documents for JournalService/DocNumberService.
 @Module({
   controllers: [GlAccountsController, JournalEntriesController, CashBankAccountsController, CashBankController, FiscalPeriodsController],
-  providers: [GlAccountService, JournalEntryService, CashBankService, LedgerQueryService, TenantContextService],
-  exports: [GlAccountService, JournalEntryService, CashBankService, LedgerQueryService],
+  providers: [GlAccountService, JournalEntryService, CashBankService, CashBankReconciliationService, LedgerQueryService, TenantContextService],
+  exports: [GlAccountService, JournalEntryService, CashBankService, CashBankReconciliationService, LedgerQueryService],
 })
 export class AccountingModule {}

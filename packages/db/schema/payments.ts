@@ -45,7 +45,7 @@ import {
   TIMESTAMP_FSP,
 } from "./_shared";
 import { documentTypes } from "./docflow";
-import { glAccounts } from "./ledger";
+import { glAccounts, journalLines } from "./ledger";
 import { branches, tenants } from "./tenant";
 
 /**
@@ -105,6 +105,73 @@ export const cashBankAccounts = mysqlTable(
       name: "fk_cash_bank_gl_account",
       columns: [table.glAccountId],
       foreignColumns: [glAccounts.glAccountId],
+    }),
+  }),
+);
+
+/**
+ * Wave 10d (`/cash-bank/reconciliations`, R2.3 -- this file's own §T90 comment already names "R2.4
+ * daily reconciliation" as the reason cash_bank_account is 1:1 with gl_account). One header row
+ * per statement reconciliation attempt. `differenceAmount`/`completedAt` are NULL until
+ * `POST .../complete` -- this wave only completes a reconciliation when the difference is exactly
+ * zero (an `adjustments[]` sub-step that would post a NEW, never-before-modelled GL rule for an
+ * unexplained bank difference is deliberately NOT built -- same "don't invent a contra account"
+ * discipline `sale-invoices.service.ts`'s own discount 422 already establishes; see
+ * cash-bank-reconciliation.service.ts's header comment).
+ */
+export const cashBankReconciliations = mysqlTable(
+  "cash_bank_reconciliation",
+  {
+    reconciliationId: idPk("reconciliation_id"),
+    tenantId: fkBigIntNotNull("tenant_id").references(() => tenants.tenantId),
+    cashBankAccountId: fkBigIntNotNull("cash_bank_account_id"),
+    statementDate: date("statement_date").notNull(),
+    statementClosingBalance: decimal("statement_closing_balance", DOCUMENT_AMOUNT).notNull(),
+    status: mysqlEnum("status", ["open", "completed"]).notNull().default("open"),
+    differenceAmount: decimal("difference_amount", DOCUMENT_AMOUNT),
+    reason: varchar("reason", { length: 500 }),
+    completedAt: datetime("completed_at", { fsp: TIMESTAMP_FSP }),
+    completedBy: fkBigInt("completed_by"),
+    ...auditColumns(),
+  },
+  (table) => ({
+    accountIdx: index("ix_cash_bank_recon_account").on(table.cashBankAccountId, table.statementDate),
+    accountFk: foreignKey({
+      name: "fk_cash_bank_recon_account",
+      columns: [table.cashBankAccountId],
+      foreignColumns: [cashBankAccounts.cashBankAccountId],
+    }),
+  }),
+);
+
+/**
+ * Join table: which append-only `journal_line` rows a reconciliation matched against the bank
+ * statement. Never mutates `journal_line` itself (ledger.ts's own append-only convention) --
+ * match state lives entirely here. A `journal_line` can only ever belong to ONE reconciliation
+ * (`uk_recon_match_line`) -- once matched by a completed reconciliation it is permanently
+ * accounted for; a still-open (never completed) reconciliation's matches don't block a future
+ * reconciliation from also proposing the same line (only COMPLETED matches are excluded from a
+ * new reconciliation's candidate list -- see the service's own `unreconciledLines` query).
+ */
+export const cashBankReconciliationMatches = mysqlTable(
+  "cash_bank_reconciliation_match",
+  {
+    reconciliationId: fkBigIntNotNull("reconciliation_id"),
+    journalLineId: fkBigIntNotNull("journal_line_id"),
+    matchedAt: datetime("matched_at", { fsp: TIMESTAMP_FSP }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+  },
+  (table) => ({
+    pk: uniqueIndex("uk_recon_match_line").on(table.reconciliationId, table.journalLineId),
+    lineIdx: index("ix_recon_match_line").on(table.journalLineId),
+    reconFk: foreignKey({
+      name: "fk_recon_match_reconciliation",
+      columns: [table.reconciliationId],
+      foreignColumns: [cashBankReconciliations.reconciliationId],
+    }),
+    lineFk: foreignKey({
+      name: "fk_recon_match_journal_line",
+      columns: [table.journalLineId],
+      foreignColumns: [journalLines.journalLineId],
     }),
   }),
 );

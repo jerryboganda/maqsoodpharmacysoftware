@@ -59,6 +59,30 @@ export const CreateCashBankTransferSchema = z.object({
 });
 export class CreateCashBankTransferDto extends createZodDto(CreateCashBankTransferSchema) {}
 
+// ---- Wave 10d: /cash-bank/reconciliations (R2.3) ------------------------------------------------
+
+export const StartReconciliationSchema = z.object({
+  cashBankAccountId: z.number().int().positive(),
+  statementDate: zDateString,
+  statementClosingBalance: zDecimalString("statementClosingBalance"),
+});
+export class StartReconciliationDto extends createZodDto(StartReconciliationSchema) {}
+
+export const ReconciliationIdParamSchema = z.object({ id: zIntString });
+export class ReconciliationIdParamDto extends createZodDto(ReconciliationIdParamSchema) {}
+
+/** `adjustments` is accepted (forward-compatible with 18-api-plan.md's literal field list) but not
+ *  implemented this wave -- see cash-bank-reconciliation.service.ts's own header comment for why a
+ *  non-zero difference always 422s regardless of whether it's supplied. */
+export const CompleteReconciliationSchema = z.object({
+  matchedLineIds: z.array(z.number().int().positive()),
+  adjustments: z.array(z.unknown()).optional(),
+  reason: z.string().max(500).optional(),
+});
+export class CompleteReconciliationDto extends createZodDto(CompleteReconciliationSchema) {}
+
 export type CreateCashBankAccountInput = z.infer<typeof CreateCashBankAccountSchema>;
 export type CashBankBookQuery = z.infer<typeof CashBankBookQuerySchema>;
 export type CreateCashBankTransferInput = z.infer<typeof CreateCashBankTransferSchema>;
+export type StartReconciliationInput = z.infer<typeof StartReconciliationSchema>;
+export type CompleteReconciliationInput = z.infer<typeof CompleteReconciliationSchema>;
