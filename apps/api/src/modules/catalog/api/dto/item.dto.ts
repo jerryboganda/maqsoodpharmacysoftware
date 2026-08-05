@@ -7,6 +7,7 @@ import { createZodDto } from "nestjs-zod";
 import { z } from "zod";
 
 import { zDecimalString4dp } from "../../../../common/validation/money-schemas.js";
+import { VisibilityScopeSchema } from "./visibility.dto.js";
 
 const zId = z.coerce.number().int().positive();
 
@@ -36,6 +37,13 @@ export const ListItemsQuerySchema = z.object({
   isActive: zBoolFlag,
   limit: zLimit,
   offset: zOffset,
+  // R1.7 (18-api-plan.md): "Every catalogue-reading endpoint accepts includeHidden=true, and
+  // every collection reports meta.hiddenByVisibility -- hidden must never mean unreachable." Only
+  // takes effect when `scope` is also given -- omitting `scope` preserves this endpoint's exact
+  // prior behaviour (isActive-only filtering) for any existing caller that doesn't know about
+  // per-scope visibility yet.
+  scope: VisibilityScopeSchema.optional(),
+  includeHidden: zBoolFlag,
 });
 export class ListItemsQueryDto extends createZodDto(ListItemsQuerySchema) {}
 

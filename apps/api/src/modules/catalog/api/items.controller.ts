@@ -12,6 +12,8 @@ import { ItemIdParamDto, ListItemsQueryDto, PatchItemDto } from "./dto/item.dto.
 export class ItemsController {
   constructor(private readonly items: ItemsService) {}
 
+  /** `scope`/`includeHidden` query params -- R1.7 (Wave 10c): see items.service.ts's `list()`
+   *  header comment for the exact contract. */
   @RequirePermission("catalog.item", "list")
   @Get()
   async list(@Query() query: ListItemsQueryDto, @CurrentActor() actor: Actor) {

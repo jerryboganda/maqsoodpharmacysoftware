@@ -3,8 +3,8 @@
 // manufacturer/dosage-form) surface here -- only list/view (unchanged) plus PATCH-style edits and
 // deactivate on an item's own already-existing, already-populated fields.
 import { Injectable } from "@nestjs/common";
-import { and, asc, eq, isNull, like, ne, or } from "drizzle-orm";
-import { getDb, items } from "@pharmacy/db";
+import { and, asc, eq, isNull, like, ne, notInArray, or } from "drizzle-orm";
+import { getDb, items, itemVisibility } from "@pharmacy/db";
 
 import type { Actor } from "../../../common/auth/actor.js";
 import { AppException } from "../../../common/errors/index.js";
@@ -30,14 +30,59 @@ function withoutUndefined<T extends object>(obj: T): { [K in keyof T]?: Exclude<
 export class ItemsService {
   constructor(private readonly tenantContext: TenantContextService) {}
 
-  async list(params: { q?: string | undefined; isActive?: boolean | undefined; offset?: number; limit?: number }, actor: Actor) {
+  /**
+   * `scope`/`includeHidden` (R1.7, Wave 10c): only takes effect when `scope` is given, preserving
+   * this endpoint's exact prior behaviour for any caller that doesn't pass it. When `scope` IS
+   * given and `includeHidden` is not `true`, items hidden for that scope (`isActive: false` -- the
+   * master switch -- OR a per-scope `item_visibility` override with `isVisible: false`) are
+   * excluded, and `meta.hiddenByVisibility` reports how many were. `includeHidden: true` always
+   * shows everything regardless -- "hidden must never mean unreachable" (R1.7's own wording) is an
+   * endpoint guarantee, not a UI convention.
+   */
+  async list(
+    params: {
+      q?: string | undefined;
+      isActive?: boolean | undefined;
+      offset?: number;
+      limit?: number;
+      scope?: "pos" | "purchase" | "reports" | "stock_list" | undefined;
+      includeHidden?: boolean | undefined;
+    },
+    actor: Actor,
+  ) {
     const db = getDb();
     const { tenantId } = await this.tenantContext.resolveScope(actor);
-    const conditions = [eq(items.tenantId, tenantId), isNull(items.deletedAt)];
+
+    // Base conditions: everything the caller asked for EXCEPT visibility -- reused twice below
+    // (once to count "how many would match without the visibility filter," once as the starting
+    // point the visibility filter narrows further), so a `q`/`isActive` filter's own effect never
+    // gets double-counted into `meta.hiddenByVisibility`.
+    const baseConditions = [eq(items.tenantId, tenantId), isNull(items.deletedAt)];
     if (params.q !== undefined) {
-      conditions.push(or(like(items.name, `%${params.q}%`), like(items.customCode, `%${params.q}%`))!);
+      baseConditions.push(or(like(items.name, `%${params.q}%`), like(items.customCode, `%${params.q}%`))!);
     }
-    if (params.isActive !== undefined) conditions.push(eq(items.isActive, params.isActive));
+    if (params.isActive !== undefined) baseConditions.push(eq(items.isActive, params.isActive));
+
+    const conditions = [...baseConditions];
+    let hiddenByVisibility = 0;
+    if (params.scope !== undefined && params.includeHidden !== true) {
+      const hiddenRows = await db
+        .select({ itemId: itemVisibility.itemId })
+        .from(itemVisibility)
+        .where(and(eq(itemVisibility.tenantId, tenantId), eq(itemVisibility.scope, params.scope), eq(itemVisibility.isVisible, false)));
+      const hiddenIds = hiddenRows.map((r) => r.itemId);
+      // Only add isActive:true when the caller didn't already narrow it themselves -- an explicit
+      // `isActive:false` alongside `scope` is a caller asking "what's hidden by the master switch
+      // in this scope", and shouldn't be silently overridden to true.
+      if (params.isActive === undefined) conditions.push(eq(items.isActive, true));
+      if (hiddenIds.length > 0) conditions.push(notInArray(items.itemId, hiddenIds));
+
+      const [totalMatching, visibleMatching] = await Promise.all([
+        db.select({ itemId: items.itemId }).from(items).where(and(...baseConditions)),
+        db.select({ itemId: items.itemId }).from(items).where(and(...conditions)),
+      ]);
+      hiddenByVisibility = totalMatching.length - visibleMatching.length;
+    }
 
     const limit = Math.min(params.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const offset = params.offset ?? 0;
@@ -62,7 +107,7 @@ export class ItemsService {
       .orderBy(asc(items.name))
       .limit(limit)
       .offset(offset);
-    return { items: rows, offset, limit };
+    return { items: rows, offset, limit, meta: { hiddenByVisibility } };
   }
 
   async getById(itemId: number, actor: Actor) {

@@ -17,6 +17,7 @@ import {
   date,
   datetime,
   decimal,
+  foreignKey,
   index,
   mysqlEnum,
   mysqlTable,
@@ -96,6 +97,34 @@ export const items = mysqlTable(
 );
 
 /**
+ * Wave 10c (`/admin/visibility/*`, R1.4/R1.8): the header row one bulk hide/show action shares --
+ * `item_visibility.bulk_operation_id` groups the (item, scope) rows a single bulk action touched,
+ * this table is the one place that records WHAT that action was (so `POST
+ * .../bulk/{id}/undo` can 422 `VISIBILITY.ALREADY_UNDONE` on a second attempt, and the workbench
+ * can show "50 items hidden by <user> on <date>, reason: ..." as one line, not fifty).
+ *
+ * `itemCount`/`scopes` are deliberately NOT duplicated here -- they're always derivable from the
+ * `item_visibility` rows still tagged with this id (`COUNT(*)`/`DISTINCT scope`), and keeping a
+ * second copy would just be one more place for the two to drift out of sync.
+ */
+export const visibilityBulkOperations = mysqlTable(
+  "visibility_bulk_operation",
+  {
+    bulkOperationId: idPk("bulk_operation_id"),
+    tenantId: fkBigIntNotNull("tenant_id").references(() => tenants.tenantId),
+    isVisible: boolean("is_visible").notNull(), // what this operation SET every affected row to
+    reason: varchar("reason", { length: 500 }).notNull(), // >=10 chars, enforced at the DTO layer
+    appliedAt: datetime("applied_at", { fsp: TIMESTAMP_FSP }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+    appliedBy: fkBigInt("applied_by"),
+    undoneAt: datetime("undone_at", { fsp: TIMESTAMP_FSP }),
+    undoneBy: fkBigInt("undone_by"),
+  },
+  (table) => ({
+    tenantIdx: index("ix_visibility_bulk_op_tenant").on(table.tenantId, table.appliedAt),
+  }),
+);
+
+/**
  * §T45 `item_visibility` -- R1.6: "The admin can control visibility independently per context,
  * because the right answer differs by screen: Sales/POS search, Purchase entry, Reports, Stock
  * lists." Absence of a row means "visible" (R1.2 -- everything ships visible by default), so the
@@ -114,12 +143,23 @@ export const itemVisibility = mysqlTable(
     changedAt: datetime("changed_at", { fsp: TIMESTAMP_FSP }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
     changedBy: fkBigInt("changed_by"),
     // Groups one bulk action so R1.4's "single-click undo" is a single reversal, not thousands.
+    // Plain column (no inline .references()) -- the FK is declared explicitly below via
+    // foreignKey({name: ...}), same reasoning ledger.ts's gl_account_category/gl_account_sub
+    // already documents: Drizzle's auto-generated name for this column
+    // (`item_visibility_bulk_operation_id_visibility_bulk_operation_bulk_operation_id_fk`, 83
+    // chars) exceeds MySQL's 64-character identifier limit (ER_TOO_LONG_IDENT) -- confirmed live
+    // against the real dev DB, not just reasoned about.
     bulkOperationId: fkBigInt("bulk_operation_id"),
   },
   (table) => ({
     pk: primaryKey({ columns: [table.itemId, table.scope] }),
     scopeIdx: index("ix_item_visibility_scope").on(table.tenantId, table.scope, table.isVisible),
     bulkIdx: index("ix_item_visibility_bulk").on(table.bulkOperationId),
+    bulkFk: foreignKey({
+      name: "fk_item_visibility_bulk_operation",
+      columns: [table.bulkOperationId],
+      foreignColumns: [visibilityBulkOperations.bulkOperationId],
+    }),
   }),
 );
 

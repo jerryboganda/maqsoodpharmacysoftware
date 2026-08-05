@@ -78,6 +78,13 @@
       "when": 1785919370270,
       "tag": "0010_wandering_arachne",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1785926207097,
+      "tag": "0011_puzzling_tinkerer",
+      "breakpoints": true
     }
   ]
 }

@@ -90,6 +90,9 @@ export const RESOURCE_KEYS = [
   "identity.session",
   "settings.option",
   "catalog.item",
+  // Wave 10c: `/admin/visibility/*` + `/items/:id/visibility` (R1 curation workbench, bulk
+  // apply/undo, "why hidden" explainer).
+  "catalog.visibility",
   "inventory.adjustment",
   "inventory.stock",
   "inventory.stock_lot",

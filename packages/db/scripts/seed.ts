@@ -163,6 +163,25 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "sys_admin", "pharmacy_manager"],
   },
 
+  // Wave 10c (R1, `/admin/visibility/*` + `/items/:id/visibility`): 18-api-plan.md's own role
+  // column reads "MGR SYS OWN AUD" for every GET (workbench/effective) and "MGR SYS" (narrower --
+  // no OWN) for every write (single-item PUT, bulk apply, bulk undo) -- followed exactly, same
+  // "the doc gives an explicit answer here" reasoning roles.controller.ts's own comment documents
+  // for its POST/PATCH split.
+  {
+    resource: "catalog.visibility",
+    action: "list",
+    name: "View the item-visibility curation workbench",
+    roles: ["owner", "sys_admin", "pharmacy_manager", "auditor"],
+  },
+  {
+    resource: "catalog.visibility",
+    action: "edit",
+    name: "Set item visibility (single-item, bulk apply, bulk undo)",
+    isSensitive: true,
+    roles: ["sys_admin", "pharmacy_manager"],
+  },
+
   // -- Inventory / stock adjustments --
   {
     resource: "inventory.adjustment",
