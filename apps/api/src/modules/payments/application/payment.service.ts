@@ -63,7 +63,7 @@
 // cancelling the whole payment) never touches the ledger at all -- allocation carries no GL entry
 // of its own to reverse (see the "ALLOCATION TARGETS" note above).
 import { Injectable } from "@nestjs/common";
-import { and, asc, desc, eq, gte, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   cashBankAccounts,
   customers,
@@ -83,6 +83,7 @@ import {
 import { Money } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import type { DbOrTx, Tx } from "../../../common/db/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
@@ -136,6 +137,7 @@ export class PaymentService {
     private readonly fiscalPeriods: FiscalPeriodService,
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
+    private readonly scope: ScopeService,
   ) {}
 
   async list(
@@ -163,8 +165,14 @@ export class PaymentService {
     if (params.dateFrom !== undefined) conditions.push(gte(payments.postingDate, new Date(`${params.dateFrom}T00:00:00`)));
     if (params.dateTo !== undefined) conditions.push(lte(payments.postingDate, new Date(`${params.dateTo}T00:00:00`)));
 
+    // F-4 (18-api-plan.md): role_scope is a mandatory AND applied AFTER the client's own filters.
     const limit = Math.min(params.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const offset = params.offset ?? 0;
+    const allowedAccountIds = await this.scope.getAllowedIds(actor, "cash_bank_account");
+    if (allowedAccountIds !== null) {
+      if (allowedAccountIds.size === 0) return { payments: [], offset, limit };
+      conditions.push(inArray(payments.cashBankAccountId, [...allowedAccountIds]));
+    }
     const rows = await db
       .select()
       .from(payments)
@@ -375,7 +383,7 @@ export class PaymentService {
         );
       }
 
-      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId);
+      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId, actor);
 
       if (input.allocations !== undefined && input.allocations.length > 0) {
         let allocSum = Money.zero();
@@ -674,7 +682,7 @@ export class PaymentService {
       const amount = Money.fromDb(payment.amount);
       const party =
         payment.direction === "out" ? await this.resolveSupplierParty(tx, tenantId, payment.supplierId!) : await this.resolveCustomerParty(tx, tenantId, payment.customerId!);
-      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, payment.cashBankAccountId);
+      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, payment.cashBankAccountId, actor);
 
       // Swap the two legs from createAndPost's own posting -- the correct reversal (AP is
       // credit-normal, so undoing a "Dr supplier" needs a "Cr supplier"; same reasoning
@@ -795,7 +803,7 @@ export class PaymentService {
     return row;
   }
 
-  private async resolveCashBankAccount(tx: Tx, tenantId: number, cashBankAccountId: number) {
+  private async resolveCashBankAccount(tx: Tx, tenantId: number, cashBankAccountId: number, actor: Actor) {
     const [row] = await tx.select().from(cashBankAccounts).where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.cashBankAccountId, cashBankAccountId)));
     if (!row) {
       throw new AppException({
@@ -808,6 +816,9 @@ export class PaymentService {
     if (!row.isActive) {
       throw new BusinessRuleException("PAYMENT.CASH_BANK_ACCOUNT_INACTIVE", "Cash/bank account inactive", `Cash/bank account #${cashBankAccountId} is inactive.`);
     }
+    // Single choke point for every write that touches a cash/bank account in this service
+    // (createAndPost, cancel) -- a write outside the actor's cash_bank_account scope 403s here.
+    await this.scope.assertAllowed(actor, "cash_bank_account", cashBankAccountId, "cashBankAccountId");
     return row;
   }
 

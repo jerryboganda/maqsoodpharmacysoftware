@@ -17,6 +17,7 @@ import { cashBankAccounts, cashBankReconciliationMatches, cashBankReconciliation
 import { Money } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import { businessDateParam } from "../../../common/dates/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
@@ -24,7 +25,10 @@ import type { CompleteReconciliationInput, StartReconciliationInput } from "../a
 
 @Injectable()
 export class CashBankReconciliationService {
-  constructor(private readonly tenantContext: TenantContextService) {}
+  constructor(
+    private readonly tenantContext: TenantContextService,
+    private readonly scope: ScopeService,
+  ) {}
 
   /** `POST /cash-bank/reconciliations` -- 422 if the account isn't a `bank` kind (per
    *  18-api-plan.md's own "account is a bank kind" validation note; a cash drawer/petty cash
@@ -35,6 +39,10 @@ export class CashBankReconciliationService {
     const actorId = Number(actor.userId);
 
     const account = await this.assertBankAccount(tenantId, input.cashBankAccountId);
+    // Write-scope check: starting a reconciliation against an account outside the actor's
+    // cash_bank_account scope 403s -- same choke point cash-bank.service.ts's own transfer()
+    // and payment/expense's resolveCashBankAccount use.
+    await this.scope.assertAllowed(actor, "cash_bank_account", input.cashBankAccountId, "cashBankAccountId");
 
     const [result] = await db.insert(cashBankReconciliations).values({
       tenantId,
@@ -62,6 +70,10 @@ export class CashBankReconciliationService {
 
     const [header] = await db.select().from(cashBankReconciliations).where(and(eq(cashBankReconciliations.reconciliationId, reconciliationId), eq(cashBankReconciliations.tenantId, tenantId)));
     if (!header) throw new NotFoundException(`No cash/bank reconciliation ${reconciliationId} for this tenant.`);
+    // Write-scope check: a reconciliation someone else started, against an account outside THIS
+    // actor's current cash_bank_account scope, cannot be completed by them either -- re-checked
+    // here (not just at start()) since the completing actor need not be the one who started it.
+    await this.scope.assertAllowed(actor, "cash_bank_account", header.cashBankAccountId, "cashBankAccountId");
     if (header.status === "completed") {
       throw new BusinessRuleException("RECON.ALREADY_COMPLETED", "Already completed", `Reconciliation ${reconciliationId} was already completed.`);
     }

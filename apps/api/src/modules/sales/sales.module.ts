@@ -5,6 +5,7 @@ import { Module } from "@nestjs/common";
 import { InventoryModule } from "../inventory/index.js";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
 import { LimitsService } from "../../common/authz/limits.service.js";
+import { ScopeService } from "../../common/authz/scope.service.js";
 import { CustomersController } from "./api/customers.controller.js";
 import { LookupsController } from "./api/lookups.controller.js";
 import { SaleInvoicesController } from "./api/sale-invoices.controller.js";
@@ -17,7 +18,7 @@ import { SaleReturnsService } from "./application/sale-returns.service.js";
 @Module({
   imports: [InventoryModule],
   controllers: [CustomersController, SaleInvoicesController, SaleReturnsController, LookupsController],
-  providers: [CustomersService, SaleInvoicesService, SaleReturnsService, LookupsService, TenantContextService, LimitsService],
+  providers: [CustomersService, SaleInvoicesService, SaleReturnsService, LookupsService, TenantContextService, LimitsService, ScopeService],
   exports: [SaleInvoicesService, SaleReturnsService, CustomersService],
 })
 export class SalesModule {}

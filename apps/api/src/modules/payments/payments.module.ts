@@ -14,6 +14,7 @@
 // constructor-inject directly into whatever service this module adds.
 import { Module } from "@nestjs/common";
 
+import { ScopeService } from "../../common/authz/scope.service.js";
 import { InventoryModule } from "../inventory/index.js";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
 import { PaymentMethodsController } from "./api/payment-methods.controller.js";
@@ -28,7 +29,7 @@ import { PaymentService } from "./application/payment.service.js";
   // not export it).
   imports: [InventoryModule],
   controllers: [PaymentMethodsController, PaymentsController],
-  providers: [PaymentMethodService, PaymentService, TenantContextService],
+  providers: [PaymentMethodService, PaymentService, TenantContextService, ScopeService],
   exports: [PaymentMethodService, PaymentService],
 })
 export class PaymentsModule {}

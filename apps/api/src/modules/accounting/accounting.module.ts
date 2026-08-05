@@ -14,6 +14,7 @@
 // a service this module does not otherwise need anything else from.
 import { Module } from "@nestjs/common";
 
+import { ScopeService } from "../../common/authz/scope.service.js";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
 import { CashBankAccountsController } from "./api/cash-bank-accounts.controller.js";
 import { CashBankController } from "./api/cash-bank.controller.js";
@@ -31,7 +32,7 @@ import { LedgerQueryService } from "./application/ledger-query.service.js";
 // documents for JournalService/DocNumberService.
 @Module({
   controllers: [GlAccountsController, JournalEntriesController, CashBankAccountsController, CashBankController, FiscalPeriodsController],
-  providers: [GlAccountService, JournalEntryService, CashBankService, CashBankReconciliationService, LedgerQueryService, TenantContextService],
+  providers: [GlAccountService, JournalEntryService, CashBankService, CashBankReconciliationService, LedgerQueryService, TenantContextService, ScopeService],
   exports: [GlAccountService, JournalEntryService, CashBankService, CashBankReconciliationService, LedgerQueryService],
 })
 export class AccountingModule {}

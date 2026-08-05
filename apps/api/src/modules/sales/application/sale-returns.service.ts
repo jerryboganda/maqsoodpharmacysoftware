@@ -76,6 +76,7 @@ import {
 import { costAmount, Money, Quantity } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import type { Tx } from "../../../common/db/index.js";
 import { localToday } from "../../../common/dates/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
@@ -104,6 +105,7 @@ export class SaleReturnsService {
     private readonly journal: JournalService,
     private readonly stock: StockService,
     private readonly tenantContext: TenantContextService,
+    private readonly scope: ScopeService,
   ) {}
 
   async list(params: {
@@ -319,6 +321,11 @@ export class SaleReturnsService {
 
       const returnCategoryId = await this.resolveReturnCategory(tx, tenantId, "cash");
       const refund = await this.resolveRefundLeg(tx, tenantId, invoice.saleInvoiceId);
+      // Wave 10f: the refund pays back out of the SAME till the original sale settled into (this
+      // method's own doc comment) -- still a real write against that cash_bank_account, so it's
+      // gated by the actor's current cash_bank_account scope exactly like sale-invoices.service.
+      // ts's own settlement-leg check, even though the account itself wasn't actor-chosen here.
+      await this.scope.assertAllowed(actor, "cash_bank_account", refund.cashBankAccountId, "cashBankAccountId");
       const fiscalPeriodId = await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, postingDate);
 
       // ---- Resolve + lock every original sale_invoice_line each requested line returns against

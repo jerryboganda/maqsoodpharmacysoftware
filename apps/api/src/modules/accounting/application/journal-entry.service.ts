@@ -5,7 +5,7 @@
 // (DocNumberService.allocate() first), AppException/BusinessRuleException error pattern,
 // TenantContextService.resolveScope(actor).
 import { Injectable } from "@nestjs/common";
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or } from "drizzle-orm";
 import {
   cashBankAccounts,
   getDb,
@@ -19,6 +19,7 @@ import {
 import { Money } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import type { Tx } from "../../../common/db/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
@@ -52,6 +53,7 @@ export class JournalEntryService {
     private readonly fiscalPeriods: FiscalPeriodService,
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
+    private readonly scope: ScopeService,
   ) {}
 
   async list(
@@ -73,16 +75,32 @@ export class JournalEntryService {
     if (params.dateFrom !== undefined) conditions.push(gte(journalEntries.entryDate, new Date(`${params.dateFrom}T00:00:00`)));
     if (params.dateTo !== undefined) conditions.push(lte(journalEntries.entryDate, new Date(`${params.dateTo}T00:00:00`)));
 
+    // voucher_category scope only constrains MANUAL vouchers -- the only document kind that
+    // carries a voucherCategoryId at all (via the manual_voucher join table). Every other
+    // document type this listing spans (sale/purchase/payment/expense/transfer postings) has no
+    // category concept to be scoped by, so a scoped actor still sees those; only an out-of-scope
+    // manual voucher is hidden -- F-4's "mandatory AND" (18-api-plan.md), narrowed to the one
+    // document kind it actually governs rather than hiding unrelated postings by mistake.
+    const allowedCategoryIds = await this.scope.getAllowedIds(actor, "voucher_category");
+    if (allowedCategoryIds !== null) {
+      conditions.push(
+        allowedCategoryIds.size === 0
+          ? isNull(manualVouchers.voucherCategoryId)
+          : or(isNull(manualVouchers.voucherCategoryId), inArray(manualVouchers.voucherCategoryId, [...allowedCategoryIds]))!,
+      );
+    }
+
     const limit = Math.min(params.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const offset = params.offset ?? 0;
     const rows = await db
-      .select()
+      .select({ entry: journalEntries })
       .from(journalEntries)
+      .leftJoin(manualVouchers, eq(manualVouchers.journalEntryId, journalEntries.journalEntryId))
       .where(and(...conditions))
       .orderBy(desc(journalEntries.entryDate), desc(journalEntries.journalEntryId))
       .limit(limit)
       .offset(offset);
-    return { journalEntries: rows, offset, limit };
+    return { journalEntries: rows.map((r) => r.entry), offset, limit };
   }
 
   async getById(journalEntryId: number, actor: Actor) {
@@ -112,6 +130,11 @@ export class JournalEntryService {
       .innerJoin(optionItems, eq(manualVouchers.voucherCategoryId, optionItems.optionItemId))
       .where(eq(manualVouchers.journalEntryId, journalEntryId));
 
+    // "Invisible row on read": a manual voucher whose category is outside the actor's
+    // voucher_category scope 404s exactly like an entry that doesn't exist. Non-manual-voucher
+    // entries (voucher === null) have no category to be scoped by -- always visible, same as list().
+    if (voucher && !(await this.scope.isReadAllowed(actor, "voucher_category", voucher.voucherCategoryId))) throw entryNotFound(journalEntryId);
+
     return { entry, lines, manualVoucher: voucher ?? null };
   }
 
@@ -130,6 +153,7 @@ export class JournalEntryService {
     return db.transaction(async (tx) => {
       // ---- Validation (before any lock is taken) -----------------------------------------
       const category = await this.resolveVoucherCategory(tx, tenantId, input.voucherCategoryId);
+      await this.scope.assertAllowed(actor, "voucher_category", input.voucherCategoryId, "voucherCategoryId");
 
       const legs: JournalLegInput[] = [];
       for (const [index, line] of input.lines.entries()) {
@@ -269,6 +293,14 @@ export class JournalEntryService {
           "Cannot reverse",
           `Journal entry ${original.entryNo} has no source document reference; this endpoint cannot reverse it yet.`,
         );
+      }
+      // Write-scope check: reversing a manual voucher is gated by the SAME voucher_category scope
+      // as creating one -- "JV" is createManualVoucher's own fixed doc series code (its header
+      // comment: "Always allocates from the JV doc series regardless of category"), so it alone
+      // identifies which reversible entries are manual vouchers with a category to be scoped by.
+      if (original.documentTypeCode === "JV") {
+        const [voucher] = await tx.select({ voucherCategoryId: manualVouchers.voucherCategoryId }).from(manualVouchers).where(eq(manualVouchers.journalEntryId, journalEntryId));
+        if (voucher) await this.scope.assertAllowed(actor, "voucher_category", voucher.voucherCategoryId, "journalEntryId");
       }
 
       await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, input.postingDate);

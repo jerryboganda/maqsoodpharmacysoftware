@@ -8,6 +8,7 @@
 // those two modules do (InventoryModule does not export it).
 import { Module } from "@nestjs/common";
 
+import { ScopeService } from "../../common/authz/scope.service.js";
 import { InventoryModule } from "../inventory/index.js";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
 import { ExpenseCategoriesController } from "./api/expense-categories.controller.js";
@@ -18,7 +19,7 @@ import { ExpenseService } from "./application/expense.service.js";
 @Module({
   imports: [InventoryModule],
   controllers: [ExpenseCategoriesController, ExpensesController],
-  providers: [ExpenseCategoryService, ExpenseService, TenantContextService],
+  providers: [ExpenseCategoryService, ExpenseService, TenantContextService, ScopeService],
   exports: [ExpenseCategoryService, ExpenseService],
 })
 export class ExpensesModule {}

@@ -49,11 +49,12 @@
 // point at; it stays available for a future "post a correcting expense" flow this task didn't ask
 // for.
 import { Injectable } from "@nestjs/common";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { cashBankAccounts, expenseCategories, expenseLines, expenses, getDb, journalEntries, journalLines } from "@pharmacy/db";
 import { Money } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import type { DbOrTx, Tx } from "../../../common/db/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
@@ -77,6 +78,7 @@ export class ExpenseService {
     private readonly fiscalPeriods: FiscalPeriodService,
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
+    private readonly scope: ScopeService,
   ) {}
 
   async list(
@@ -98,8 +100,14 @@ export class ExpenseService {
     if (params.dateFrom !== undefined) conditions.push(gte(expenses.expenseDate, new Date(`${params.dateFrom}T00:00:00`)));
     if (params.dateTo !== undefined) conditions.push(lte(expenses.expenseDate, new Date(`${params.dateTo}T00:00:00`)));
 
+    // F-4 (18-api-plan.md): role_scope is a mandatory AND applied AFTER the client's own filters.
     const limit = Math.min(params.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const offset = params.offset ?? 0;
+    const allowedAccountIds = await this.scope.getAllowedIds(actor, "cash_bank_account");
+    if (allowedAccountIds !== null) {
+      if (allowedAccountIds.size === 0) return { expenses: [], offset, limit };
+      conditions.push(inArray(expenses.cashBankAccountId, [...allowedAccountIds]));
+    }
     const rows = await db
       .select()
       .from(expenses)
@@ -127,7 +135,7 @@ export class ExpenseService {
 
     const created = await db.transaction(async (tx) => {
       // ---- Validation (before any lock is taken) -------------------------------------------
-      await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId);
+      await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId, actor);
 
       const computed = await this.computeLines(tx, tenantId, input.lines);
       let totalAmount = Money.zero();
@@ -195,7 +203,7 @@ export class ExpenseService {
       }
 
       if (input.cashBankAccountId !== undefined) {
-        await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId);
+        await this.resolveCashBankAccount(tx, tenantId, input.cashBankAccountId, actor);
       }
       if (input.expenseDate !== undefined) {
         // Period-lock VALIDATION only -- see this file's header comment.
@@ -269,7 +277,7 @@ export class ExpenseService {
       // Period-lock VALIDATION only -- see this file's header comment.
       await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, expenseDateStr);
 
-      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, header.cashBankAccountId);
+      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, header.cashBankAccountId, actor);
       const totalAmount = Money.fromDb(header.totalAmount);
 
       if (!cashBankAccount.allowNegative) {
@@ -360,7 +368,7 @@ export class ExpenseService {
       }
 
       const lines = await tx.select().from(expenseLines).where(eq(expenseLines.expenseId, expenseId)).orderBy(asc(expenseLines.lineNo));
-      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, header.cashBankAccountId);
+      const cashBankAccount = await this.resolveCashBankAccount(tx, tenantId, header.cashBankAccountId, actor);
       const totalAmount = Money.fromDb(header.totalAmount);
 
       // Swap: the original's per-category debit ("charge") legs become credits (role tag stays
@@ -447,7 +455,7 @@ export class ExpenseService {
     return header;
   }
 
-  private async resolveCashBankAccount(tx: Tx, tenantId: number, cashBankAccountId: number) {
+  private async resolveCashBankAccount(tx: Tx, tenantId: number, cashBankAccountId: number, actor: Actor) {
     const [row] = await tx.select().from(cashBankAccounts).where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.cashBankAccountId, cashBankAccountId)));
     if (!row) {
       throw new AppException({
@@ -460,6 +468,10 @@ export class ExpenseService {
     if (!row.isActive) {
       throw new BusinessRuleException("EXPENSE.CASH_BANK_ACCOUNT_INACTIVE", "Cash/bank account inactive", `Cash/bank account #${cashBankAccountId} is inactive.`);
     }
+    // Single choke point for every write that touches a cash/bank account in this service
+    // (create, update, post, reverse) -- a write outside the actor's cash_bank_account scope
+    // 403s here.
+    await this.scope.assertAllowed(actor, "cash_bank_account", cashBankAccountId, "cashBankAccountId");
     return row;
   }
 

@@ -60,6 +60,7 @@ import { localToday } from "../../../common/dates/index.js";
 import { DocNumberService, FiscalPeriodService } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
 import { LimitsService } from "../../../common/authz/limits.service.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import { JournalService, type JournalLegInput } from "../../../common/ledger/journal.service.js";
 import { StockService, type FefoAllocation } from "../../inventory/infrastructure/stock.service.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
@@ -238,6 +239,7 @@ export class SaleInvoicesService {
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
     private readonly limits: LimitsService,
+    private readonly scope: ScopeService,
   ) {}
 
   /**
@@ -572,6 +574,14 @@ export class SaleInvoicesService {
       // limits.service.ts's own header comment for the multi-role semantics.
       await this.limits.check(actor, "max_txn_value", invoiceTotal.toDb());
       await this.limits.check(actor, "max_qty", totalQty.toDb());
+
+      // Wave 10f: cash_bank_account write-scope check -- doc's own "SLS ◐ own till" note
+      // (18-api-plan.md §0.13.1) means a scoped sales_officer can only settle a cash sale into
+      // their own till/account, never an arbitrary one resolved from the payment method's
+      // default. Same "no side effect on denial" placement as the limit checks above.
+      for (const [i, plannedPayment] of plannedPayments.entries()) {
+        await this.scope.assertAllowed(actor, "cash_bank_account", plannedPayment.cashBankAccountId, `payments.${i}.cashBankAccountId`);
+      }
 
       // -- allocate the invoice number (N-1: as late as possible, right before the header) ---
       const allocatedNumber = await this.docNumbers.allocate(tx, tenantId, "SV");

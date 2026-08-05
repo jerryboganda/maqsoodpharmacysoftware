@@ -2,11 +2,12 @@
 // (R2.3). Structural mirror of purchasing/application/supplier.service.ts's create (GL leaf
 // validation inside the same transaction) and purchase-return.service.ts's TX-6 lock order.
 import { Injectable } from "@nestjs/common";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { cashBankAccounts, getDb, glAccountSubs, glAccounts, journalEntries, journalLines } from "@pharmacy/db";
 import { Money } from "@pharmacy/money";
 
 import type { Actor } from "../../../common/auth/actor.js";
+import { ScopeService } from "../../../common/authz/scope.service.js";
 import type { Tx } from "../../../common/db/index.js";
 import { DocNumberService, FiscalPeriodService, JournalService, type JournalLegInput } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
@@ -31,6 +32,7 @@ export class CashBankService {
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
     private readonly ledgerQuery: LedgerQueryService,
+    private readonly scope: ScopeService,
   ) {}
 
   async list(
@@ -43,8 +45,16 @@ export class CashBankService {
     if (params.accountKind !== undefined) conditions.push(eq(cashBankAccounts.accountKind, params.accountKind));
     if (params.isActive !== undefined) conditions.push(eq(cashBankAccounts.isActive, params.isActive));
 
+    // F-4 (18-api-plan.md): role_scope is a mandatory AND applied AFTER the client's own filters
+    // -- an actor scoped to specific accounts (e.g. "SLS own till") never sees rows outside it,
+    // no matter what accountKind/isActive they pass.
     const limit = Math.min(params.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const offset = params.offset ?? 0;
+    const allowedIds = await this.scope.getAllowedIds(actor, "cash_bank_account");
+    if (allowedIds !== null) {
+      if (allowedIds.size === 0) return { cashBankAccounts: [], offset, limit };
+      conditions.push(inArray(cashBankAccounts.cashBankAccountId, [...allowedIds]));
+    }
     const rows = await db
       .select()
       .from(cashBankAccounts)
@@ -62,7 +72,9 @@ export class CashBankService {
       .select()
       .from(cashBankAccounts)
       .where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.cashBankAccountId, cashBankAccountId)));
-    if (!row) throw accountNotFound(cashBankAccountId);
+    // "Invisible row on read" (18-api-plan.md §0.13.3): a scope-denied account 404s exactly like
+    // one that doesn't exist, never a 403 that would confirm its existence to an out-of-scope actor.
+    if (!row || !(await this.scope.isReadAllowed(actor, "cash_bank_account", cashBankAccountId))) throw accountNotFound(cashBankAccountId);
     return row;
   }
 
@@ -132,7 +144,7 @@ export class CashBankService {
       .select({ cashBankAccountId: cashBankAccounts.cashBankAccountId, glAccountId: cashBankAccounts.glAccountId })
       .from(cashBankAccounts)
       .where(and(eq(cashBankAccounts.tenantId, tenantId), eq(cashBankAccounts.cashBankAccountId, params.cashBankAccountId)));
-    if (!account) throw accountNotFound(params.cashBankAccountId);
+    if (!account || !(await this.scope.isReadAllowed(actor, "cash_bank_account", params.cashBankAccountId))) throw accountNotFound(params.cashBankAccountId);
 
     const [gl] = await db.select({ normalBalance: glAccounts.normalBalance }).from(glAccounts).where(eq(glAccounts.glAccountId, account.glAccountId));
     if (!gl) throw new Error("cash_bank_account.gl_account_id points at a missing gl_account"); // unreachable; FK-enforced
@@ -171,6 +183,12 @@ export class CashBankService {
     return db.transaction(async (tx) => {
       const from = await this.assertActiveAccount(tx, tenantId, input.fromCashBankAccountId, "fromCashBankAccountId");
       const to = await this.assertActiveAccount(tx, tenantId, input.toCashBankAccountId, "toCashBankAccountId");
+      // Write-scope check (403 AUTHZ.SCOPE_DENIED, not the read path's 404 mask): a transfer
+      // moves real money, so BOTH legs must be within the actor's cash_bank_account scope, not
+      // just one -- an actor scoped to their own till cannot move money INTO it from an account
+      // they don't otherwise have access to either.
+      await this.scope.assertAllowed(actor, "cash_bank_account", input.fromCashBankAccountId, "fromCashBankAccountId");
+      await this.scope.assertAllowed(actor, "cash_bank_account", input.toCashBankAccountId, "toCashBankAccountId");
       const amount = parseAmount(input.amount, "amount");
 
       await this.fiscalPeriods.resolveOpenPeriod(tx, tenantId, input.transferDate);
