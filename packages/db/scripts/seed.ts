@@ -655,6 +655,49 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["accountant"],
   },
 
+  // -- cashier_shift: till/cashier-session lifecycle (R2.4). §I.4's own row: "SLS SHF MGR" open/
+  // count/close, "SHF MGR (never the cashier)" approve, "SLS (own shift only, enforced in-service,
+  // not by this row) SHF MGR ACC OWN AUD" z-report/view. No GL posting this wave -- see
+  // payments.ts's cashierShifts class comment (RS-3 / gl_account_binding gap) and
+  // cashier-shift.service.ts's own header comment.
+  {
+    resource: "cashier_shift",
+    action: "list",
+    name: "List cashier shifts",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "cashier_shift",
+    action: "view",
+    name: "View a cashier shift and its z-report",
+    roles: ["owner", "pharmacy_manager", "shift_incharge", "sales_officer", "accountant", "auditor"],
+  },
+  {
+    resource: "cashier_shift",
+    action: "create",
+    name: "Open a cashier shift",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "cashier_shift",
+    action: "edit",
+    name: "Submit a cashier shift's denomination count",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "cashier_shift",
+    action: "post",
+    name: "Close a cashier shift (post the count, compute the variance)",
+    roles: ["pharmacy_manager", "shift_incharge", "sales_officer"],
+  },
+  {
+    resource: "cashier_shift",
+    action: "approve",
+    name: "Approve a closed cashier shift (supervisor sign-off; never the cashier who opened it)",
+    isSensitive: true,
+    roles: ["pharmacy_manager", "shift_incharge"],
+  },
+
   // -- payment: supplier/customer/other-party payments and receipts (R2.1). No explicit §I.4 row
   // -> fallback, including the purchase_officer/sales_officer `create`-not-`post` grant.
   {
@@ -1123,6 +1166,9 @@ const DOC_TYPES = [
   { code: "PAYMENT", name: "Payment / receipt", seriesCode: "PMT", prefix: "PMT-" },
   { code: "EXPENSE", name: "Expense", seriesCode: "EXP", prefix: "EXP-" },
   { code: "CASH_BANK_TRANSFER", name: "Cash/bank transfer", seriesCode: "CBT", prefix: "CBT-" },
+  // Wave 10g (cashier shifts, R2.4) -- one doc number per open shift, same allocate-at-create
+  // pattern every other document type above uses.
+  { code: "CASHIER_SHIFT", name: "Cashier shift", seriesCode: "CSHIFT", prefix: "CSHIFT-" },
 ] as const;
 
 // §5 (option_list `voucher_category`, task instruction) -- the 22-legacy-category system

@@ -17,8 +17,10 @@ import { Module } from "@nestjs/common";
 import { ScopeService } from "../../common/authz/scope.service.js";
 import { InventoryModule } from "../inventory/index.js";
 import { TenantContextService } from "../inventory/infrastructure/tenant-context.service.js";
+import { CashierShiftsController } from "./api/cashier-shift.controller.js";
 import { PaymentMethodsController } from "./api/payment-methods.controller.js";
 import { PaymentsController } from "./api/payments.controller.js";
+import { CashierShiftService } from "./application/cashier-shift.service.js";
 import { PaymentMethodService } from "./application/payment-method.service.js";
 import { PaymentService } from "./application/payment.service.js";
 
@@ -28,8 +30,8 @@ import { PaymentService } from "./application/payment.service.js";
   // re-provided per-module below for the same reason those two modules do (InventoryModule does
   // not export it).
   imports: [InventoryModule],
-  controllers: [PaymentMethodsController, PaymentsController],
-  providers: [PaymentMethodService, PaymentService, TenantContextService, ScopeService],
-  exports: [PaymentMethodService, PaymentService],
+  controllers: [PaymentMethodsController, PaymentsController, CashierShiftsController],
+  providers: [PaymentMethodService, PaymentService, CashierShiftService, TenantContextService, ScopeService],
+  exports: [PaymentMethodService, PaymentService, CashierShiftService],
 })
 export class PaymentsModule {}

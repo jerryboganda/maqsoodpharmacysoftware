@@ -135,6 +135,8 @@ export const RESOURCE_KEYS = [
   // Wave 10a: platform module -- the D1 feature-capability register (health/ready are @Public(),
   // no permission at all).
   "platform.feature_capability",
+  // Wave 10g: cashier shifts (R2.4) -- open/count/close/approve/z-report lifecycle.
+  "cashier_shift",
 ] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});

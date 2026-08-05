@@ -27,6 +27,7 @@ import {
   decimal,
   foreignKey,
   index,
+  int,
   mysqlEnum,
   mysqlTable,
   smallint,
@@ -45,6 +46,7 @@ import {
   TIMESTAMP_FSP,
 } from "./_shared";
 import { documentTypes } from "./docflow";
+import { appUsers } from "./identity";
 import { glAccounts, journalLines } from "./ledger";
 import { branches, tenants } from "./tenant";
 
@@ -317,5 +319,117 @@ export const paymentAllocations = mysqlTable(
     }),
     // Hand-verify emission in the generated migration -- see header comment.
     amountCheck: check("ck_alloc_amount", sql`${table.allocatedAmount} > 0`),
+  }),
+);
+
+/**
+ * §T100/T101 `cashier_shift` / `cashier_shift_count` -- R2.4, the till/cashier-session lifecycle
+ * (open -> blind denomination count -> close -> supervisor approve), plus a read-only z-report.
+ * Dormant in the legacy system (0 rows, `06` §3.6) -- activated, not reinvented, per R2.4/AC-5;
+ * R-049 forbids porting the vendor code, so every column below is a fresh design against the
+ * blueprint's own T100/T101 DDL, adapted to this package's conventions (own idPk, DOCUMENT_AMOUNT
+ * instead of the blueprint's literal DECIMAL(18,4) -- same file-wide deviation this file's own
+ * header comment already documents for every other money column here).
+ *
+ * RS-3 (`19` §15 / `20`'s own "hard precondition" language): "no R2 code is written until the
+ * accountant has signed the debit/credit rules for every new posting" -- covers supplier payment,
+ * expense, cash/bank transfer, AND cashier variance (`19` §14 V-2). Wave 5 already resolved this
+ * for payment/expense/transfer by deriving their GL legs from ALREADY-EXISTING account bindings
+ * (supplier.glAccountId, cashBankAccount.glAccountId -- no invented rule). The cashier-variance
+ * leg has no such existing binding to derive from: the blueprint's own `variance_account_id`
+ * column defaults from `gl_account_binding['cashier_variance']`, and `gl_account_binding` (T89)
+ * itself has never been built anywhere in this rebuild (grep-confirmed zero references across
+ * packages/db/schema). Building a brand-new generic account-binding config table AND guessing
+ * which real account 'cashier_variance' should point at, with no sign-off, is exactly the risk
+ * RS-3 exists to prevent -- same "don't invent a contra account" discipline
+ * cash-bank-reconciliation.service.ts's own header comment already establishes for an analogous
+ * gap. This wave therefore builds the FULL shift lifecycle and computes/persists the variance
+ * honestly, but never posts a GL journal entry for it -- `varianceAccountId`/`journalEntryId` stay
+ * in the schema (matching the blueprint, ready for a future wave once V-2 is signed) but are never
+ * populated by this wave's service; see cashier-shift.service.ts's own header comment.
+ *
+ * Shift attribution to sales/returns/expenses (the z-report's own salesByMethod[]/expensesPaid
+ * breakdown) is derived from `cashBankAccountId` + the shift's own [openedAt, closedAt-or-now)
+ * time window against `journal_line`/`sale_invoice_payment`, NOT a new `cashier_shift_id` FK
+ * retrofitted onto `sale_invoice`/`expense` -- sales.ts's own `cashier_shift_id`
+ * TODO(blueprint) comment anticipated exactly this column, but adding it would touch the
+ * already-shipped, heavily-tested sale-invoice creation path for a value this derivation can
+ * compute without it; left deferred for a future wave that wants hard per-invoice attribution
+ * rather than a time-window derivation.
+ */
+export const cashierShifts = mysqlTable(
+  "cashier_shift",
+  {
+    cashierShiftId: idPk("cashier_shift_id"),
+    tenantId: fkBigIntNotNull("tenant_id").references(() => tenants.tenantId),
+    branchId: fkBigIntNotNull("branch_id").references(() => branches.branchId),
+    docNumber: varchar("doc_number", { length: 32 }).notNull(),
+    docSeriesId: fkBigIntNotNull("doc_series_id"),
+    documentTypeId: fkBigIntNotNull("document_type_id"),
+    userId: fkBigIntNotNull("user_id").references(() => appUsers.userId), // the cashier
+    // Plain column, explicit FK below -- mirrors cashBankAccounts.glAccountId's own reasoning
+    // (auto-generated name risk near MySQL's 64-char limit once table/column names compound).
+    cashBankAccountId: fkBigIntNotNull("cash_bank_account_id"),
+    openedAt: datetime("opened_at", { fsp: TIMESTAMP_FSP }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+    closedAt: datetime("closed_at", { fsp: TIMESTAMP_FSP }),
+    openingFloatAmount: decimal("opening_float_amount", DOCUMENT_AMOUNT).notNull().default("0.00"),
+    // Persisted at count() time (not deferred to close()) -- the blind-count response
+    // (countedTotal/expectedCash/variance) IS this pair, so close() just requires they're already set.
+    expectedCashAmount: decimal("expected_cash_amount", DOCUMENT_AMOUNT),
+    countedCashAmount: decimal("counted_cash_amount", DOCUMENT_AMOUNT),
+    varianceAmount: decimal("variance_amount", DOCUMENT_AMOUNT).generatedAlwaysAs(
+      sql`\`counted_cash_amount\` - \`expected_cash_amount\``,
+      { mode: "stored" },
+    ),
+    varianceReason: varchar("variance_reason", { length: 500 }),
+    // Never populated this wave -- see class comment (RS-3 / gl_account_binding gap).
+    varianceAccountId: fkBigInt("variance_account_id"),
+    status: mysqlEnum("status", ["open", "closed", "approved"]).notNull().default("open"),
+    approvedBy: fkBigInt("approved_by").references(() => appUsers.userId),
+    approvedAt: datetime("approved_at", { fsp: TIMESTAMP_FSP }),
+    // Never populated this wave -- see class comment.
+    journalEntryId: fkBigInt("journal_entry_id"),
+    ...auditColumns(),
+  },
+  (table) => ({
+    docNumberUnique: uniqueIndex("uk_cashier_shift_doc_number").on(table.tenantId, table.docNumber),
+    // "No other open shift for this user+till" (18-api-plan.md's own POST /cashier-shifts row) --
+    // a real partial unique index would need a functional/filtered form Drizzle 0.36 can't express
+    // (same class of gap this file's own cashBankAccounts header comment already documents for
+    // uk_cash_bank_default); enforced at the service layer instead, this index just makes the
+    // lookup itself efficient.
+    openShiftIdx: index("ix_cashier_shift_open").on(table.userId, table.cashBankAccountId, table.status),
+    accountIdx: index("ix_cashier_shift_account").on(table.cashBankAccountId, table.openedAt),
+    cashBankFk: foreignKey({
+      name: "fk_cashier_shift_cash_bank_account",
+      columns: [table.cashBankAccountId],
+      foreignColumns: [cashBankAccounts.cashBankAccountId],
+    }),
+  }),
+);
+
+export const cashierShiftCounts = mysqlTable(
+  "cashier_shift_count",
+  {
+    countId: idPk("count_id"),
+    cashierShiftId: fkBigIntNotNull("cashier_shift_id"),
+    denominationAmount: decimal("denomination_amount", DOCUMENT_AMOUNT).notNull(),
+    denominationCount: int("denomination_count", { unsigned: true }).notNull(),
+    lineTotal: decimal("line_total", DOCUMENT_AMOUNT).generatedAlwaysAs(
+      sql`\`denomination_amount\` * \`denomination_count\``,
+      { mode: "stored" },
+    ),
+    countedAt: datetime("counted_at", { fsp: TIMESTAMP_FSP }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+    countedBy: fkBigInt("counted_by").references(() => appUsers.userId),
+  },
+  (table) => ({
+    // §T101's uk_shift_count -- one row per denomination value per shift; count() replaces the
+    // whole set (delete-then-insert), mirroring role_scope's own PUT replace semantics.
+    denomUnique: uniqueIndex("uk_shift_count").on(table.cashierShiftId, table.denominationAmount),
+    shiftFk: foreignKey({
+      name: "fk_shift_count_cashier_shift",
+      columns: [table.cashierShiftId],
+      foreignColumns: [cashierShifts.cashierShiftId],
+    }),
   }),
 );
