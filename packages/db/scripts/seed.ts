@@ -267,6 +267,16 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "pharmacy_manager"],
   },
   {
+    // Wave 9 (R4.5): recall trace surfaces customer identity across every invoice a lot was ever
+    // dispensed on -- same "owner/pharmacy_manager, isSensitive" pair hold/release already use
+    // for lot-lifecycle actions, not the broader view-only role set.
+    resource: "inventory.stock_lot",
+    action: "recall_trace",
+    name: "Trace every sale a stock lot was dispensed on (batch recall)",
+    isSensitive: true,
+    roles: ["owner", "pharmacy_manager"],
+  },
+  {
     resource: "inventory.expiry",
     action: "view_dashboard",
     name: "View the expiry dashboard",

@@ -704,6 +704,66 @@ describe("inventory module", () => {
     });
   });
 
+  describe("GET /stock-lots/:id/recall-trace (Wave 9, R4.5: given a batch, every sale that dispensed it)", () => {
+    it("traces a real posted sale line back to the exact lot it drew from, including its dispensingNote, and 404s for a lot that doesn't exist", async () => {
+      const item = await createFreshItem(tenantId, 1, { salePrice: "30.0000", purchasePrice: "20.0000" });
+
+      const purchaseRes = await request<PurchaseInvoiceResponse>(testApp, {
+        method: "POST",
+        url: "/purchase-invoices",
+        token: managerA.token,
+        idempotencyKey: newIdempotencyKey(),
+        body: {
+          supplierId: supplier.supplierId,
+          documentDate: DOC_DATE,
+          lines: [{ itemId: item.itemId, qtyPack: "10", unitPurchasePrice: "20.0000" }],
+        },
+      });
+      expect(purchaseRes.status, JSON.stringify(purchaseRes.json)).toBe(201);
+      const stockLotId = purchaseRes.json.lines[0]!.stockLotId;
+
+      const note = `recall-trace-note-${Date.now().toString(36)}`;
+      const saleRes = await request<{ saleInvoice: { saleInvoiceId: number; docNumber: string }; lines: { stockLotId: number }[] }>(testApp, {
+        method: "POST",
+        url: "/sale-invoices",
+        token: managerA.token,
+        idempotencyKey: newIdempotencyKey(),
+        body: {
+          documentDate: DOC_DATE,
+          lines: [{ itemId: item.itemId, qty: "3", dispensingNote: note }],
+          payments: [{ paymentMethodId: cashPaymentMethodId, amount: "90.00" }],
+        },
+      });
+      expect(saleRes.status, JSON.stringify(saleRes.json)).toBe(201);
+      expect(saleRes.json.lines[0]!.stockLotId).toBe(stockLotId); // this item has exactly one lot -- FEFO can only have drawn from it
+
+      const traceRes = await request<{
+        lot: { stockLotId: number; itemId: number; batchNo: string | null; supplierId: number };
+        sales: { saleInvoiceId: number; docNumber: string; qtyBase: string; dispensingNote: string | null; status: string }[];
+      }>(testApp, { method: "GET", url: `/stock-lots/${stockLotId}/recall-trace`, token: managerA.token });
+      expect(traceRes.status, JSON.stringify(traceRes.json)).toBe(200);
+      expect(traceRes.json.lot.stockLotId).toBe(stockLotId);
+      expect(traceRes.json.lot.itemId).toBe(item.itemId);
+      expect(traceRes.json.lot.supplierId).toBe(supplier.supplierId);
+
+      const line = traceRes.json.sales.find((s) => s.docNumber === saleRes.json.saleInvoice.docNumber);
+      expect(line).toBeDefined();
+      expect(line!.saleInvoiceId).toBe(saleRes.json.saleInvoice.saleInvoiceId);
+      expect(line!.qtyBase).toBe("3.0000");
+      expect(line!.dispensingNote).toBe(note);
+      expect(line!.status).toBe("posted");
+
+      // A non-existent lot 404s -- same tenant/branch-scoped not-found handling getLotById uses.
+      const notFound = await request<ProblemResponseBody>(testApp, {
+        method: "GET",
+        url: "/stock-lots/999999999/recall-trace",
+        token: managerA.token,
+      });
+      expect(notFound.status).toBe(404);
+      expect(notFound.json.code).toBe("INVENTORY.STOCK_LOT_NOT_FOUND");
+    });
+  });
+
   describe("expiry dashboard: real lots bucketed by days-to-expiry", () => {
     it("buckets lots into expired/30/60/90 by a real, controllable expiryDate set at purchase time, and excludes a lot beyond the 90-day horizon", async () => {
       const item = await createFreshItem(tenantId, 1, { hasExpiry: true });

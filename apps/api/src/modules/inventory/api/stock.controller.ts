@@ -59,6 +59,17 @@ export class StockController {
     return this.stockQueries.getLotById(scope, params.id);
   }
 
+  /** GET /stock-lots/:id/recall-trace -- Wave 9, R4.5: given a batch, every sale that dispensed
+   *  it. Distinct permission from plain `:view` (a recall trace surfaces customer/contact
+   *  information across potentially many invoices -- a deliberately separate grant, same
+   *  reasoning `view_ledger` is kept separate from plain `view` elsewhere in this codebase). */
+  @RequirePermission("inventory.stock_lot", "recall_trace")
+  @Get("stock-lots/:id/recall-trace")
+  async getRecallTrace(@Param() params: StockLotIdParamDto, @CurrentActor() actor: Actor) {
+    const scope = await this.tenantContext.resolveScope(actor);
+    return this.stockQueries.getRecallTrace(scope, params.id);
+  }
+
   /** POST /stock-lots/:id/hold -- available -> quarantined; excluded from FEFO immediately. */
   @RequirePermission("inventory.stock_lot", "hold")
   @RequireIdempotencyKey()

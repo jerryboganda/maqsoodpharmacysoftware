@@ -71,6 +71,10 @@ export const ACTION_KEYS = [
   // a period's own status back), and distinct from a generic "edit" (a period's dates/key are not
   // editable via either action -- only the status transition is).
   "reopen",
+  // Wave 9 (R4.5): `inventory.stock_lot:recall_trace` -- distinct from plain "view" because a
+  // recall trace surfaces customer identity/contact info across every invoice that ever drew from
+  // a lot, a materially broader disclosure than one lot's own fields.
+  "recall_trace",
 ] as const;
 
 export type ActionKey = (typeof ACTION_KEYS)[number];

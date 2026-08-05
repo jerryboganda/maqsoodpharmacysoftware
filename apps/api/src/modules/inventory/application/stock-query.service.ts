@@ -4,7 +4,7 @@
 // transactions; none is needed here).
 import { Injectable } from "@nestjs/common";
 import { and, asc, desc, eq, isNotNull, lt, lte, sql } from "drizzle-orm";
-import { getDb, items, stockBalances, stockLots, stockMovements } from "@pharmacy/db";
+import { customers, getDb, items, saleInvoiceLines, saleInvoices, stockBalances, stockLots, stockMovements, suppliers } from "@pharmacy/db";
 
 import { localToday } from "../../../common/dates/index.js";
 import { AppException } from "../../../common/errors/index.js";
@@ -210,6 +210,67 @@ export class StockQueryService {
 
     const movements = await this.listMovements(scope, { stockLotId, limit: 100 });
     return { ...lot, movements: movements.data };
+  }
+
+  /**
+   * `GET /stock-lots/:id/recall-trace` -- Wave 9, R4.5's own literal promise: "given a batch,
+   * every sale that dispensed it" (catalog.ts's own `stockLots` class comment names this "THE
+   * recall link"). A patient-safety feature: if a manufacturer recalls a batch, this is the query
+   * that answers "who did we sell it to". Every `sale_invoice_line` row that ever drew from this
+   * lot -- INCLUDING lines on a since-cancelled/reversed invoice (a recall coordinator needs the
+   * full dispensing history, not just what's still "active"; `status` is returned per row so the
+   * caller can filter or highlight as needed, never silently dropped). 404 mirrors `getLotById`'s
+   * own tenant/branch-scoped not-found handling exactly -- this is not a separate resource, just
+   * a different read of the same lot.
+   */
+  async getRecallTrace(scope: TenantBranchScope, stockLotId: number) {
+    const db = getDb();
+    const [lot] = await db
+      .select({
+        stockLotId: stockLots.stockLotId,
+        itemId: stockLots.itemId,
+        itemName: items.name,
+        batchNo: stockLots.batchNo,
+        expiryDate: stockLots.expiryDate,
+        lotStatus: stockLots.lotStatus,
+        supplierId: stockLots.supplierId,
+        supplierName: suppliers.name,
+        sourceDocumentTypeId: stockLots.sourceDocumentTypeId,
+        sourceDocumentId: stockLots.sourceDocumentId,
+        receivedOn: stockLots.receivedOn,
+      })
+      .from(stockLots)
+      .innerJoin(items, eq(items.itemId, stockLots.itemId))
+      .leftJoin(suppliers, eq(suppliers.supplierId, stockLots.supplierId))
+      .where(and(eq(stockLots.tenantId, scope.tenantId), eq(stockLots.branchId, scope.branchId), eq(stockLots.stockLotId, stockLotId)));
+    if (!lot) {
+      throw new AppException({
+        status: 404,
+        code: "INVENTORY.STOCK_LOT_NOT_FOUND",
+        title: "Stock lot not found",
+        detail: `No stock lot with id ${stockLotId} exists.`,
+      });
+    }
+
+    const sales = await db
+      .select({
+        saleInvoiceLineId: saleInvoiceLines.saleInvoiceLineId,
+        saleInvoiceId: saleInvoices.saleInvoiceId,
+        docNumber: saleInvoices.docNumber,
+        postingDate: saleInvoices.postingDate,
+        status: saleInvoices.status,
+        customerId: saleInvoices.customerId,
+        customerName: customers.name,
+        qtyBase: saleInvoiceLines.qtyBase,
+        dispensingNote: saleInvoiceLines.dispensingNote, // U-062/D18/R7 -- same recall relevance a controlled-drug batch would need
+      })
+      .from(saleInvoiceLines)
+      .innerJoin(saleInvoices, eq(saleInvoices.saleInvoiceId, saleInvoiceLines.saleInvoiceId))
+      .leftJoin(customers, eq(customers.customerId, saleInvoices.customerId))
+      .where(eq(saleInvoiceLines.stockLotId, stockLotId))
+      .orderBy(desc(saleInvoices.postingDate), asc(saleInvoiceLines.saleInvoiceLineId));
+
+    return { lot, sales };
   }
 
   /**
