@@ -32,9 +32,17 @@ export const roles = mysqlTable(
     tenantId: fkBigInt("tenant_id").references(() => tenants.tenantId),
     roleKey: varchar("role_key", { length: 64 }).notNull(), // e.g. `owner`, `sales_officer`
     displayName: varchar("display_name", { length: 120 }).notNull(),
+    // Wave 10b (`POST/PATCH /roles`, 18-api-plan.md §0.3): D15 bilingual English/Urdu pattern,
+    // same pairing identity.ts's `appUsers.displayNameUr` already uses for its own `displayName`.
+    displayNameUr: varchar("display_name_ur", { length: 120 }),
     description: varchar("description", { length: 255 }),
     isSystem: boolean("is_system").notNull().default(false), // system roles cannot be deleted (09 §I.2)
     isAdmin: boolean("is_admin").notNull().default(false),
+    // Wave 10b: the real "remove" mechanism for an admin-created role (P1.3 -- disable, never
+    // delete). Mirrors options.ts option_item's `isEnabled` pattern exactly, including its own
+    // established rule (settings.service.ts's updateOptionItem): `isSystem` rows can never be
+    // disabled through the admin endpoint -- 422 `ROLE.SYSTEM_ROLE_PROTECTED`.
+    isEnabled: boolean("is_enabled").notNull().default(true),
     legacyGroupCode: varchar("legacy_group_code", { length: 16 }), // legacy Groups.GroupCode traceability
     ...auditColumns(),
     ...softDeleteColumns(),

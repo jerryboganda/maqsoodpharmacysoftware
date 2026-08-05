@@ -3,13 +3,15 @@
 import { createZodDto } from "nestjs-zod";
 import { z } from "zod";
 
-import { ROLE_KEYS, type RoleKey } from "../../../../common/auth/actor.js";
-
-// Cast to a `RoleKey` (not `string`) tuple so `z.enum(...)`'s inferred TS type stays the literal
-// union -- CreateUserDto.roles/ReplaceUserRolesDto.roles feed straight into
-// UserAdminService methods typed `readonly RoleKey[]`, so a widened-to-`string` inference here
-// would fail to typecheck at every call site.
-const ROLE_KEY_TUPLE = [...ROLE_KEYS] as [RoleKey, ...RoleKey[]];
+// Wave 10b: role-ASSIGNMENT input (`CreateUserSchema.roles`, `ReplaceUserRolesSchema.roles`) is
+// no longer restricted to the eight seeded keys via `z.enum` -- since `POST /roles` (this file's
+// own `CreateRoleSchema` below) can mint new ones, a closed enum here would make a freshly
+// created custom role permanently unassignable. `ROLE_KEY_REGEX` still validates SHAPE (matches
+// `CreateRoleSchema.key`'s own rule); real EXISTENCE validation happens where it always has --
+// `UserAdminRepository.resolveRoleIds` throws `IDENTITY.UNKNOWN_ROLE` on any key that isn't an
+// actual row, loudly, never silently dropped.
+const ROLE_KEY_REGEX = /^[a-z_]{3,32}$/;
+const RoleKeySchema = z.string().regex(ROLE_KEY_REGEX, "role key must be 3-32 lowercase letters/underscores");
 
 export const UserIdParamSchema = z.object({ id: z.coerce.number().int().positive() });
 export class UserIdParamDto extends createZodDto(UserIdParamSchema) {}
@@ -20,7 +22,7 @@ export const AdminUserResponseSchema = z.object({
   displayName: z.string(),
   isActive: z.boolean(),
   mustChangePassword: z.boolean(),
-  roles: z.array(z.enum(ROLE_KEY_TUPLE)),
+  roles: z.array(z.string()),
 });
 export class AdminUserResponseDto extends createZodDto(AdminUserResponseSchema) {}
 
@@ -34,7 +36,7 @@ export const CreateUserSchema = z.object({
   // At least one role -- an admin-created user with zero roles could be created but could never
   // reach ANY permission-gated route, including the self-service ones (identity.credential:edit,
   // identity.session:delete) -- an unusable, effectively locked account by construction.
-  roles: z.array(z.enum(ROLE_KEY_TUPLE)).min(1),
+  roles: z.array(RoleKeySchema).min(1),
 });
 export class CreateUserDto extends createZodDto(CreateUserSchema) {}
 
@@ -52,7 +54,7 @@ export class PatchUserDto extends createZodDto(PatchUserSchema) {}
 
 export const ReplaceUserRolesSchema = z.object({
   // Same "never leave a user with zero reachable permissions" reasoning as CreateUserSchema.
-  roles: z.array(z.enum(ROLE_KEY_TUPLE)).min(1),
+  roles: z.array(RoleKeySchema).min(1),
 });
 export class ReplaceUserRolesDto extends createZodDto(ReplaceUserRolesSchema) {}
 
@@ -60,10 +62,54 @@ export const RoleResponseSchema = z.object({
   roleId: z.number().int(),
   roleKey: z.string(),
   displayName: z.string(),
+  displayNameUr: z.string().nullable(),
   description: z.string().nullable(),
   isSystem: z.boolean(),
+  isEnabled: z.boolean(),
 });
 export class RoleResponseDto extends createZodDto(RoleResponseSchema) {}
+
+// ---- Wave 10b: POST/PATCH /roles (18-api-plan.md §0.3) -----------------------------------------
+//
+// Always creates/edits a PLATFORM-WIDE role (`tenantId` NULL) -- the same kind the eight seeded
+// system roles already are. A FURTHER increment (a tenant admin defining a role visible only to
+// their own tenant, `tenantId` set -- access.ts `roles`' own header comment already anticipates
+// this) is deliberately out of scope here: `Actor`/`TenantContextService` have no per-request
+// "acting tenant" concept threaded through the permission-check path yet (permissions.service.ts
+// today matches `isNull(roles.tenantId)` unconditionally), and building that properly is exactly
+// the kind of "deserves its own dedicated wave" item this project's Wave 10 backlog reasoning
+// (task #39/#40's own framing) already applies elsewhere -- not silently dropped, just not
+// bundled into this endpoint's first cut.
+export const CreateRoleSchema = z.object({
+  key: RoleKeySchema,
+  name: z.string().min(1).max(120),
+  nameUr: z.string().min(1).max(120).optional(),
+  // R1.10's plain-language-description rule (already applied to settings.branch/platform.
+  // feature_capability elsewhere in this codebase) -- mandatory, not optional.
+  description: z.string().min(1).max(255),
+  /** If given, copy the source role's CURRENT `role_permission` grants onto the new role (a
+   *  starting point, not a live link -- editing one afterward never affects the other). */
+  clonedFromRoleKey: z.string().min(1).max(64).optional(),
+});
+export class CreateRoleDto extends createZodDto(CreateRoleSchema) {}
+
+export const RoleKeyParamSchema = z.object({ roleKey: z.string().min(1).max(64) });
+export class RoleKeyParamDto extends createZodDto(RoleKeyParamSchema) {}
+
+export const UpdateRoleSchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    nameUr: z.string().min(1).max(120).nullable().optional(),
+    description: z.string().min(1).max(255).optional(),
+    /** `false` on an `isSystem` role is rejected -- 422 `ROLE.SYSTEM_ROLE_PROTECTED`, same
+     *  "isEnabled is the real delete-equivalent, system rows are exempt" rule
+     *  settings.service.ts's `updateOptionItem` already establishes for option_item. */
+    isEnabled: z.boolean().optional(),
+  })
+  .refine((v) => v.name !== undefined || v.nameUr !== undefined || v.description !== undefined || v.isEnabled !== undefined, {
+    message: "at least one field (name, nameUr, description, isEnabled) must be provided",
+  });
+export class UpdateRoleDto extends createZodDto(UpdateRoleSchema) {}
 
 export const PermissionResponseSchema = z.object({
   permissionId: z.number().int(),

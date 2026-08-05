@@ -9,7 +9,7 @@
 // this repository owns the admin-facing CRUD and is never exported past `modules/identity`.
 import { Injectable } from "@nestjs/common";
 import { and, eq, isNull } from "drizzle-orm";
-import { appUsers, getDb, permissions, roles, userRoles } from "@pharmacy/db";
+import { appUsers, getDb, permissions, rolePermissions, roles, userRoles } from "@pharmacy/db";
 
 import type { RoleKey } from "../../../common/auth/actor.js";
 import type { Tx } from "../../../common/db/index.js";
@@ -28,8 +28,10 @@ export interface RoleCatalogRow {
   readonly roleId: number;
   readonly roleKey: string;
   readonly displayName: string;
+  readonly displayNameUr: string | null;
   readonly description: string | null;
   readonly isSystem: boolean;
+  readonly isEnabled: boolean;
 }
 
 export interface PermissionCatalogRow {
@@ -187,12 +189,128 @@ export class UserAdminRepository {
         roleId: roles.roleId,
         roleKey: roles.roleKey,
         displayName: roles.displayName,
+        displayNameUr: roles.displayNameUr,
         description: roles.description,
         isSystem: roles.isSystem,
+        isEnabled: roles.isEnabled,
       })
       .from(roles)
       .where(and(isNull(roles.tenantId), isNull(roles.deletedAt)));
     return rows;
+  }
+
+  /** `POST /roles` -- always a platform-wide role (`tenantId` NULL, see user-admin.dto.ts's
+   *  header comment on `CreateRoleSchema` for why per-tenant custom roles are a further, deferred
+   *  increment). 409 `ROLE.KEY_TAKEN` on a duplicate key (checked against platform-wide roles
+   *  only -- the same scope `resolveRoleIds` resolves against, so a role this endpoint creates is
+   *  guaranteed immediately assignable). */
+  async createRole(
+    input: { key: string; name: string; nameUr?: string | undefined; description: string; clonedFromRoleKey?: string | undefined },
+    actorId: number,
+  ): Promise<RoleCatalogRow> {
+    const db = getDb();
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select({ roleId: roles.roleId }).from(roles).where(and(isNull(roles.tenantId), eq(roles.roleKey, input.key)));
+      if (existing) {
+        throw new BusinessRuleException("ROLE.KEY_TAKEN", "Role key already used", `A role with key "${input.key}" already exists.`);
+      }
+
+      let clonedFromRoleId: number | undefined;
+      if (input.clonedFromRoleKey !== undefined) {
+        const [source] = await tx
+          .select({ roleId: roles.roleId })
+          .from(roles)
+          .where(and(isNull(roles.tenantId), isNull(roles.deletedAt), eq(roles.roleKey, input.clonedFromRoleKey)));
+        if (!source) {
+          throw new BusinessRuleException(
+            "ROLE.CLONE_SOURCE_NOT_FOUND",
+            "Clone source not found",
+            `Role "${input.clonedFromRoleKey}" (clonedFromRoleKey) does not exist -- cannot clone its permission grants.`,
+          );
+        }
+        clonedFromRoleId = source.roleId;
+      }
+
+      await tx.insert(roles).values({
+        tenantId: null,
+        roleKey: input.key,
+        displayName: input.name,
+        ...(input.nameUr !== undefined && { displayNameUr: input.nameUr }),
+        description: input.description,
+        isSystem: false,
+        isAdmin: false,
+        isEnabled: true,
+        createdBy: actorId,
+        createdSource: "api",
+      });
+      const [created] = await tx.select().from(roles).where(and(isNull(roles.tenantId), eq(roles.roleKey, input.key)));
+      if (!created) throw new Error("role insert did not land"); // unreachable; defensive
+
+      if (clonedFromRoleId !== undefined) {
+        const sourceGrants = await tx.select({ permissionId: rolePermissions.permissionId }).from(rolePermissions).where(eq(rolePermissions.roleId, clonedFromRoleId));
+        if (sourceGrants.length > 0) {
+          const now = new Date();
+          await tx.insert(rolePermissions).values(sourceGrants.map((g) => ({ roleId: created.roleId, permissionId: g.permissionId, grantedAt: now, grantedBy: actorId })));
+        }
+      }
+
+      return {
+        roleId: created.roleId,
+        roleKey: created.roleKey,
+        displayName: created.displayName,
+        displayNameUr: created.displayNameUr,
+        description: created.description,
+        isSystem: created.isSystem,
+        isEnabled: created.isEnabled,
+      };
+    });
+  }
+
+  /** `PATCH /roles/:roleKey` -- 404 if unknown (NotFoundException, matching every other admin
+   *  PATCH endpoint's convention -- fiscal-period.service.ts's `requirePeriod`,
+   *  settings.service.ts's branch update). 422 `ROLE.SYSTEM_ROLE_PROTECTED` is the caller's
+   *  responsibility to check BEFORE calling this (UserAdminService.updateRole) -- kept out of the
+   *  repository layer so the business rule lives with the other business rules, not buried in a
+   *  data-access method. */
+  async updateRole(
+    roleKey: string,
+    input: { name?: string | undefined; nameUr?: string | null | undefined; description?: string | undefined; isEnabled?: boolean | undefined },
+    actorId: number,
+  ): Promise<RoleCatalogRow> {
+    const db = getDb();
+    await db
+      .update(roles)
+      .set({
+        ...(input.name !== undefined && { displayName: input.name }),
+        ...(input.nameUr !== undefined && { displayNameUr: input.nameUr }),
+        ...(input.description !== undefined && { description: input.description }),
+        ...(input.isEnabled !== undefined && { isEnabled: input.isEnabled }),
+        updatedBy: actorId,
+      })
+      .where(and(isNull(roles.tenantId), eq(roles.roleKey, roleKey)));
+
+    const [updated] = await db.select().from(roles).where(and(isNull(roles.tenantId), eq(roles.roleKey, roleKey)));
+    if (!updated) throw new Error(`role "${roleKey}" vanished immediately after its own update`); // unreachable; defensive -- existence already checked by the caller
+    return {
+      roleId: updated.roleId,
+      roleKey: updated.roleKey,
+      displayName: updated.displayName,
+      displayNameUr: updated.displayNameUr,
+      description: updated.description,
+      isSystem: updated.isSystem,
+      isEnabled: updated.isEnabled,
+    };
+  }
+
+  /** Looked up by both `UserAdminService.updateRole` (existence + `isSystem` check before the
+   *  update) and indirectly mirrors what `resolveRoleIds` already resolves against. */
+  async findRoleByKey(roleKey: string): Promise<{ roleId: number; isSystem: boolean } | undefined> {
+    const db = getDb();
+    const [row] = await db
+      .select({ roleId: roles.roleId, isSystem: roles.isSystem })
+      .from(roles)
+      .where(and(isNull(roles.tenantId), isNull(roles.deletedAt), eq(roles.roleKey, roleKey)));
+    return row;
   }
 
   async listPermissionCatalog(): Promise<PermissionCatalogRow[]> {
@@ -211,10 +329,15 @@ export class UserAdminRepository {
     return rows;
   }
 
-  /** Resolves role keys to role ids against the seeded system-role catalogue (tenant_id NULL --
-   *  the only kind `RoleKey` can represent today, same reasoning as permissions.service.ts's
-   *  header comment). Throws on any key that isn't a known system role rather than silently
-   *  dropping it -- a typo'd role key must fail loudly, not grant one fewer role than requested. */
+  /** Resolves role keys to role ids against every platform-wide role (tenant_id NULL) -- the
+   *  eight seeded system roles AND any Wave 10b admin-created custom role (`POST /roles` always
+   *  creates a tenantId=NULL row, same scope, so a freshly created role is immediately
+   *  assignable here with no further wiring). Throws on any key that doesn't match a row rather
+   *  than silently dropping it -- a typo'd role key must fail loudly, not grant one fewer role
+   *  than requested. Deliberately does NOT filter `isEnabled` -- assigning a currently-disabled
+   *  role to a user is allowed (it simply grants nothing until re-enabled, same as any other
+   *  disabled role a user already holds); only the real-time permission CHECK
+   *  (permissions.service.ts) enforces `isEnabled`. */
   private async resolveRoleIds(tx: Tx, roleKeys: readonly RoleKey[]): Promise<number[]> {
     if (roleKeys.length === 0) return [];
     const rows = await tx.select({ roleId: roles.roleId, roleKey: roles.roleKey }).from(roles).where(isNull(roles.tenantId));
@@ -222,7 +345,7 @@ export class UserAdminRepository {
     return roleKeys.map((key) => {
       const roleId = byKey.get(key);
       if (roleId === undefined) {
-        throw new BusinessRuleException("IDENTITY.UNKNOWN_ROLE", "Unknown role", `Role "${key}" is not a known system role.`);
+        throw new BusinessRuleException("IDENTITY.UNKNOWN_ROLE", "Unknown role", `Role "${key}" is not a known role.`);
       }
       return roleId;
     });

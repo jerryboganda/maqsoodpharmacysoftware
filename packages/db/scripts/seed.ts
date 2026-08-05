@@ -112,7 +112,20 @@ const PERMISSIONS: ReadonlyArray<{
     isSensitive: true,
     roles: ["owner", "sys_admin"],
   },
-  { resource: "identity.role", action: "list", name: "List roles", roles: ["owner", "sys_admin"] },
+  {
+    resource: "identity.role",
+    action: "list",
+    name: "List roles",
+    // 18-api-plan.md §0.3: "SYS OWN AUD" for GET /roles -- "auditor" was missing here (a
+    // pre-existing gap, found and fixed while adding Wave 10b's create/edit rows below, which the
+    // doc narrows to "SYS" only -- see roles.controller.ts's own header comment on that split).
+    roles: ["owner", "sys_admin", "auditor"],
+  },
+  // Wave 10b (POST/PATCH /roles): deliberately narrower than `list` above -- sys_admin only,
+  // matching 18-api-plan.md §0.3's explicit "SYS" (not "SYS OWN") for both these routes. An owner
+  // can see the role catalogue but not create/edit rows in it.
+  { resource: "identity.role", action: "create", name: "Create a custom role", isSensitive: true, roles: ["sys_admin"] },
+  { resource: "identity.role", action: "edit", name: "Rename/describe/disable a role", isSensitive: true, roles: ["sys_admin"] },
   { resource: "identity.permission", action: "list", name: "List permissions", roles: ["owner", "sys_admin"] },
 
   // -- Item catalogue (browsing; §I.4's "item view cost/margin" row narrows further once

@@ -18,7 +18,12 @@ export const ROLE_KEYS = [
   "auditor",
 ] as const;
 
-export type RoleKey = (typeof ROLE_KEYS)[number];
+// Wave 10b (`POST/PATCH /roles`): widened past the closed 8-key union so an admin-created custom
+// role (access.ts `roles`, `tenantId` NULL, `isSystem` false) type-checks everywhere a `RoleKey`
+// already flows -- same `(string & {})` widening trick `permissions.ts`'s `ResourceKey` already
+// uses, for the identical reason (real validation happens at the DB layer -- see
+// user-admin.repository.ts's `resolveRoleIds` -- not by TypeScript narrowing at the type level).
+export type RoleKey = (typeof ROLE_KEYS)[number] | (string & {});
 
 /** The authenticated actor for the current request. */
 export interface Actor {

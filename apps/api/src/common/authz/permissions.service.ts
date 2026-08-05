@@ -48,11 +48,19 @@ export class PermissionsService {
           eq(permissions.code, required.key),
           isNull(permissions.deletedAt),
           isNull(roles.deletedAt),
-          // Every seeded role today is a platform-wide system role (tenant_id NULL, access.ts
-          // `roles` header) and `Actor.roles` is typed to exactly those eight keys (actor.ts
-          // `ROLE_KEYS`), so a tenant-scoped custom role literally cannot appear in `actor.roles`
-          // yet. TODO(tenant-scoped custom roles): once that type widens past `RoleKey`, this
-          // must also match `roles.tenantId = <actor's tenant>` for non-system rows.
+          // Wave 10b: `roles.isEnabled` is the real "remove" mechanism for an admin-created role
+          // (P1.3 -- disable, never delete) -- a disabled role must stop granting immediately,
+          // not just on next login, since this check re-runs on every single request. System
+          // roles cannot be disabled at all through the admin endpoint (roles.dto.ts's
+          // updateRole -- 422 ROLE.SYSTEM_ROLE_PROTECTED), so this never affects the eight seeded
+          // roles in practice.
+          eq(roles.isEnabled, true),
+          // Platform-wide roles only (tenant_id NULL) -- both the eight seeded system roles AND
+          // Wave 10b's admin-created custom roles (POST /roles always creates tenantId=NULL rows,
+          // see roles.dto.ts's own header comment for why a further per-tenant increment is
+          // deliberately out of scope for this wave). TODO(tenant-scoped custom roles): a FUTURE
+          // increment that lets a tenant admin define a role visible only to their own tenant
+          // would need this to also match `roles.tenantId = <actor's tenant>` for those rows.
           isNull(roles.tenantId),
           inArray(roles.roleKey, [...actor.roles]),
         ),

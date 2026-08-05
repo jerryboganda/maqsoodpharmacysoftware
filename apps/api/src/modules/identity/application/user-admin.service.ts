@@ -1,7 +1,7 @@
 // Blueprint: docs/system-analysis/17-technical-blueprint.md §2.2 "Application" layer;
 // 09-roles-permissions.md §I.5 ("force a password reset for all 9 users at cutover" -- the same
 // must-change-password-on-creation pattern applies to every new user this endpoint creates).
-import { Injectable } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
 import * as argon2 from "argon2";
 
@@ -65,6 +65,38 @@ export class UserAdminService {
 
   async listRoles(): Promise<RoleCatalogRow[]> {
     return this.users.listRoleCatalog();
+  }
+
+  /** `POST /roles`. See user-admin.repository.ts's `createRole` for the uniqueness/clone rules. */
+  async createRole(
+    input: { key: string; name: string; nameUr?: string | undefined; description: string; clonedFromRoleKey?: string | undefined },
+    actorId: number,
+  ): Promise<RoleCatalogRow> {
+    return this.users.createRole(input, actorId);
+  }
+
+  /** `PATCH /roles/:roleKey`. The one business rule that lives here rather than the repository
+   *  (see that method's own doc comment on why): `isEnabled: false` on an `isSystem` role is
+   *  rejected -- 422 `ROLE.SYSTEM_ROLE_PROTECTED`, the exact "disable is the delete-equivalent,
+   *  system rows are exempt" rule settings.service.ts's `updateOptionItem` already establishes
+   *  for `option_item`. */
+  async updateRole(
+    roleKey: string,
+    input: { name?: string | undefined; nameUr?: string | null | undefined; description?: string | undefined; isEnabled?: boolean | undefined },
+    actorId: number,
+  ): Promise<RoleCatalogRow> {
+    const existing = await this.users.findRoleByKey(roleKey);
+    if (!existing) throw new NotFoundException(`No role "${roleKey}".`);
+
+    if (input.isEnabled === false && existing.isSystem) {
+      throw new BusinessRuleException(
+        "ROLE.SYSTEM_ROLE_PROTECTED",
+        "System role cannot be disabled",
+        `Role "${roleKey}" is one of the eight seeded system roles the application depends on and cannot be disabled. It may still be renamed or redescribed.`,
+      );
+    }
+
+    return this.users.updateRole(roleKey, input, actorId);
   }
 
   async listPermissions(): Promise<PermissionCatalogRow[]> {
