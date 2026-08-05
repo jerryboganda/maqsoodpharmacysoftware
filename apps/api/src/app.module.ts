@@ -25,6 +25,7 @@ import { IdentityModule } from "./modules/identity/index.js";
 import { InventoryModule } from "./modules/inventory/index.js";
 import { NotificationsModule } from "./modules/notifications/index.js";
 import { PaymentsModule } from "./modules/payments/index.js";
+import { PlatformModule } from "./modules/platform/index.js";
 import { PurchasingModule } from "./modules/purchasing/index.js";
 import { ReportingModule } from "./modules/reporting/index.js";
 import { SalesModule } from "./modules/sales/index.js";
@@ -51,6 +52,8 @@ import { SettingsModule } from "./modules/settings/index.js";
     ReportingModule,
     AuditModule,
     NotificationsModule,
+    // Wave 10a: health/ready probes + the D1 feature-capability register.
+    PlatformModule,
   ],
   providers: [
     // Order matters: SessionGuard attaches `request.actor` before PermissionGuard reads it.

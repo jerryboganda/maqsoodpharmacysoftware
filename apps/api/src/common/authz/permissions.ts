@@ -126,6 +126,12 @@ export const RESOURCE_KEYS = [
   "audit",
   "notification",
   "dashboard",
+  // Wave 8: DRAP controlled-drug compliance -- branch identity/address + drug-sale-licence
+  // tracking (settings.branch:list/edit, seed.ts's PERMISSIONS block).
+  "settings.branch",
+  // Wave 10a: platform module -- the D1 feature-capability register (health/ready are @Public(),
+  // no permission at all).
+  "platform.feature_capability",
 ] as const;
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number] | (string & {});

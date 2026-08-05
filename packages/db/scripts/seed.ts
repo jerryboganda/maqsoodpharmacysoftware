@@ -34,6 +34,7 @@ import {
   docSeriesCounters,
   documentTypes,
   expenseCategories,
+  featureCapabilities,
   fiscalPeriods,
   fiscalYears,
   glAccountCategories,
@@ -894,6 +895,27 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "sys_admin", "pharmacy_manager"],
   },
 
+  // Wave 10a (platform module): the D1 feature-capability register. `list` grants read/oversight
+  // roles (owner/sys_admin/auditor -- mirrors `audit:list`'s own role set, since this register is
+  // itself an audit trail of rebuild-scope decisions). `edit` is deliberately narrower --
+  // 18-api-plan.md §1.4's own spec says "OWN only, sensitive" for recording an owner decision on
+  // a deferred vertical, so this is NOT widened to sys_admin the way settings.branch:edit above
+  // was (that widening was this codebase's own judgement call in the absence of a matrix row;
+  // here the doc gives an explicit, narrower answer and this follows it exactly).
+  {
+    resource: "platform.feature_capability",
+    action: "list",
+    name: "View the D1 feature-capability register",
+    roles: ["owner", "sys_admin", "auditor"],
+  },
+  {
+    resource: "platform.feature_capability",
+    action: "edit",
+    name: "Record an owner decision on a feature-capability register entry",
+    isSensitive: true,
+    roles: ["owner"],
+  },
+
   // `sale.cash`/`sale.return` cancel/reverse -- undoing a posted cash sale or sale return. 09
   // §I.4 has no row literally named "cancel"/"reverse" for either resource, but it DOES have the
   // closest real analogue: `sale.cash` "unpost / edit-posted" is the only row in the whole matrix
@@ -1085,6 +1107,66 @@ const DOC_TYPES = [
 // that regex and the list becomes unreachable through GET /settings/options/:key. Found and fixed
 // during Wave 5 integration live-verification, before any consumer (frontend, other seed data)
 // referenced the old bare code, so this is a rename, not a migration of live data.
+// Wave 10a (platform module): the D1 feature-capability register's starting rows. NOT an
+// exhaustive re-catalogue of all 335 legacy capabilities from 18-api-plan.md -- that would be
+// inventing precision nobody asked for. This is exactly the handful of decisions this project has
+// ALREADY made and documented elsewhere (00b-owner-decisions-and-requirements.md D1, task #28's
+// three permanently-blocked items, Wave 8's U-062), made queryable through the new register
+// instead of left buried in prose. `decidedOn` intentionally omitted here (seed data has no real
+// decision date -- `null` is honest; the PATCH endpoint stamps a real one when an owner actually
+// acts through it).
+const FEATURE_CAPABILITIES = [
+  {
+    code: "non_pharmacy_verticals",
+    name: "Non-pharmacy business verticals (veterinary, general retail, etc.)",
+    module: "platform",
+    status: "deferred" as const,
+    decisionRef: "D1",
+    rationale:
+      'D1 (2026-08-01): "Pharmacy business system in full ... Non-pharmacy verticals ... are catalogued but deferred -- never silently dropped."',
+  },
+  {
+    code: "tax_engine",
+    name: "Tax engine (rates/exemptions)",
+    module: "accounting",
+    status: "excluded" as const,
+    decisionRef: "U-021/U-074",
+    rationale: "Task #28: rates/exemptions are unknown and cannot be inferred from analysis alone -- needs accountant/tax-adviser sign-off.",
+  },
+  {
+    code: "fbr_fiscalization",
+    name: "FBR fiscalization",
+    module: "accounting",
+    status: "excluded" as const,
+    decisionRef: "U-060",
+    rationale: "Task #28: which FBR regime applies is an open P0 blocker per 14-unknowns-and-questions.md -- needs owner/tax-adviser input.",
+  },
+  {
+    code: "financial_statements",
+    name: "Formal financial statements (trial balance, balance sheet, income statement)",
+    module: "accounting",
+    status: "excluded" as const,
+    decisionRef: "U-017",
+    rationale: "Task #28: the spec for these must be written, not ported/inferred from the legacy system -- needs owner/accountant sign-off.",
+  },
+  {
+    code: "drap_controlled_drug_compliance",
+    name: "DRAP controlled-drug compliance record-keeping",
+    module: "sales",
+    status: "in_scope" as const,
+    decisionRef: "D18",
+    rationale:
+      "Wave 8 (2026-08-05): generic record-keeping infrastructure built (licence tracking, dispensing note, register report, expiry alert) per R7's design commitment; the retail-pharmacy-specific legal register/retention/countersignature requirements still need a licensed pharmacist/regulatory consultant.",
+  },
+] satisfies ReadonlyArray<{
+  code: string;
+  name: string;
+  module: string;
+  status: "in_scope" | "deferred" | "excluded" | "replaced";
+  decisionRef: string;
+  rationale: string;
+}>;
+
 const VOUCHER_CATEGORY_LIST_CODE = "accounting.voucher_category";
 const VOUCHER_CATEGORIES = [
   {
@@ -1623,6 +1705,31 @@ async function main(): Promise<void> {
       `Sale document print formats: ${listInserted} new option list(s), ${itemsInserted} new option item(s) ` +
         `(${PRINT_FORMATS.length} checked).`,
     );
+  }
+
+  // ---- Block 1f: feature_capability register rows (per-row idempotent) --------------------------
+  // Same shape/position/idempotency pattern as blocks 1c/1d/1e above -- platform-wide (no
+  // tenant_id, matching access.ts's `permission` table reasoning), so no tenant lookup needed.
+  {
+    let capabilitiesInserted = 0;
+    for (const capability of FEATURE_CAPABILITIES) {
+      const [existing] = await db
+        .select({ featureCapabilityId: featureCapabilities.featureCapabilityId })
+        .from(featureCapabilities)
+        .where(eq(featureCapabilities.code, capability.code));
+      if (existing) continue;
+
+      await db.insert(featureCapabilities).values({
+        code: capability.code,
+        name: capability.name,
+        module: capability.module,
+        status: capability.status,
+        decisionRef: capability.decisionRef,
+        rationale: capability.rationale,
+      });
+      capabilitiesInserted++;
+    }
+    console.log(`Feature capabilities: ${capabilitiesInserted} new register entry(ies) (${FEATURE_CAPABILITIES.length} checked).`);
   }
 
   // ---- Block 2: docflow / GL chart / payments / categories / parties / items ------------------

@@ -1,0 +1,20 @@
+CREATE TABLE `feature_capability` (
+	`feature_capability_id` bigint unsigned AUTO_INCREMENT NOT NULL,
+	`code` varchar(64) NOT NULL,
+	`name` varchar(160) NOT NULL,
+	`module` varchar(64),
+	`status` enum('in_scope','deferred','excluded','replaced') NOT NULL DEFAULT 'deferred',
+	`legacy_table_count` int unsigned,
+	`legacy_evidence` varchar(500),
+	`decision_ref` varchar(32),
+	`decided_on` date,
+	`rationale` varchar(1000),
+	`created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+	`created_by` bigint unsigned,
+	`created_source` enum('ui','api','migration','system_job','import') NOT NULL DEFAULT 'ui',
+	`updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+	`updated_by` bigint unsigned,
+	`row_version` int unsigned NOT NULL DEFAULT 1,
+	CONSTRAINT `feature_capability_feature_capability_id` PRIMARY KEY(`feature_capability_id`),
+	CONSTRAINT `uk_feature_capability_code` UNIQUE(`code`)
+);
