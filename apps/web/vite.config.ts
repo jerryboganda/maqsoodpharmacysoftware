@@ -11,7 +11,7 @@ export default defineConfig({
     // Talks to apps/api in dev without needing CORS on every request path.
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: "http://localhost:3001",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
