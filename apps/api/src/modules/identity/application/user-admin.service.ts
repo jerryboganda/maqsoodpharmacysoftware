@@ -99,6 +99,24 @@ export class UserAdminService {
     return this.users.updateRole(roleKey, input, actorId);
   }
 
+  // ---- Wave 10e: role_scope / role_limit (R-007 CRITICAL) ----------------------------------
+
+  async getRoleScopes(roleKey: string) {
+    return this.users.getRoleScopes(roleKey);
+  }
+
+  async putRoleScopes(roleKey: string, scopes: ReadonlyArray<{ scopeType: string; scopeValues: readonly number[] }>, actorId: number) {
+    return this.users.putRoleScopes(roleKey, scopes, actorId);
+  }
+
+  async getRoleLimits(roleKey: string) {
+    return this.users.getRoleLimits(roleKey);
+  }
+
+  async putRoleLimits(roleKey: string, limits: ReadonlyArray<{ limitKey: string; limitValue: string }>, actorId: number) {
+    return this.users.putRoleLimits(roleKey, limits, actorId);
+  }
+
   async listPermissions(): Promise<PermissionCatalogRow[]> {
     return this.users.listPermissionCatalog();
   }

@@ -59,6 +59,7 @@ import type { DbOrTx, Tx } from "../../../common/db/index.js";
 import { localToday } from "../../../common/dates/index.js";
 import { DocNumberService, FiscalPeriodService } from "../../../common/docflow/index.js";
 import { AppException, BusinessRuleException } from "../../../common/errors/index.js";
+import { LimitsService } from "../../../common/authz/limits.service.js";
 import { JournalService, type JournalLegInput } from "../../../common/ledger/journal.service.js";
 import { StockService, type FefoAllocation } from "../../inventory/infrastructure/stock.service.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
@@ -236,6 +237,7 @@ export class SaleInvoicesService {
     private readonly fiscalPeriods: FiscalPeriodService,
     private readonly journal: JournalService,
     private readonly tenantContext: TenantContextService,
+    private readonly limits: LimitsService,
   ) {}
 
   /**
@@ -562,6 +564,14 @@ export class SaleInvoicesService {
       const { customer, category, fiscalPeriodId, planned, allAllocations, grossAmount, cogsAmount, totalQty, netAmount, invoiceTotal } =
         computed;
       const { plannedPayments, changeAmount, changeAbsorbingIndex } = computed;
+
+      // Wave 10e (R-007 CRITICAL): role_limit checks, evaluated INSIDE this transaction and
+      // BEFORE the doc-number allocation below (a limit failure must not even burn a document
+      // number -- 18-api-plan.md's own "no database side effect" requirement). A no-op for every
+      // actor until an owner/sys_admin actually configures a role_limit row -- see
+      // limits.service.ts's own header comment for the multi-role semantics.
+      await this.limits.check(actor, "max_txn_value", invoiceTotal.toDb());
+      await this.limits.check(actor, "max_qty", totalQty.toDb());
 
       // -- allocate the invoice number (N-1: as late as possible, right before the header) ---
       const allocatedNumber = await this.docNumbers.allocate(tx, tenantId, "SV");

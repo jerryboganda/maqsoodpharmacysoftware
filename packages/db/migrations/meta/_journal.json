@@ -92,6 +92,13 @@
       "when": 1785927423450,
       "tag": "0012_massive_the_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1785928303559,
+      "tag": "0013_lumpy_betty_ross",
+      "breakpoints": true
     }
   ]
 }

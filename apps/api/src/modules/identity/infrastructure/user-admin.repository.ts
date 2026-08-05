@@ -7,13 +7,14 @@
 // needs to be usable by a human instead of only enforced. Separate from
 // `user.repository.ts` (that one is the public, credential-free `User` shape other modules read);
 // this repository owns the admin-facing CRUD and is never exported past `modules/identity`.
-import { Injectable } from "@nestjs/common";
-import { and, eq, isNull } from "drizzle-orm";
-import { appUsers, getDb, permissions, rolePermissions, roles, userRoles } from "@pharmacy/db";
+import { Injectable, NotFoundException } from "@nestjs/common";
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import { appUsers, getDb, permissions, rolePermissions, roleScopes, roleLimits, roles, userRoles } from "@pharmacy/db";
 
 import type { RoleKey } from "../../../common/auth/actor.js";
 import type { Tx } from "../../../common/db/index.js";
 import { BusinessRuleException } from "../../../common/errors/index.js";
+import { LIMIT_KEYS } from "../api/dto/user-admin.dto.js";
 
 export interface AdminUserRow {
   readonly userId: string;
@@ -349,5 +350,88 @@ export class UserAdminRepository {
       }
       return roleId;
     });
+  }
+
+  // ---- Wave 10e: role_scope / role_limit (R-007 CRITICAL) ----------------------------------
+
+  private async requireRoleId(roleKey: string): Promise<number> {
+    const db = getDb();
+    const [row] = await db.select({ roleId: roles.roleId }).from(roles).where(and(isNull(roles.tenantId), eq(roles.roleKey, roleKey)));
+    if (!row) throw new NotFoundException(`No role "${roleKey}".`);
+    return row.roleId;
+  }
+
+  /** `GET /roles/:roleKey/scopes` -- grouped by scopeType, `scopeValues` sorted so the response is
+   *  stable across calls (no ordering guarantee on the underlying rows otherwise). */
+  async getRoleScopes(roleKey: string): Promise<Array<{ scopeType: (typeof roleScopes.scopeType.enumValues)[number]; scopeValues: number[] }>> {
+    const db = getDb();
+    const roleId = await this.requireRoleId(roleKey);
+    const rows = await db.select({ scopeType: roleScopes.scopeType, scopeRefId: roleScopes.scopeRefId }).from(roleScopes).where(eq(roleScopes.roleId, roleId));
+    const byType = new Map<(typeof roleScopes.scopeType.enumValues)[number], number[]>();
+    for (const row of rows) {
+      const list = byType.get(row.scopeType) ?? [];
+      list.push(row.scopeRefId);
+      byType.set(row.scopeType, list);
+    }
+    return [...byType.entries()].map(([scopeType, scopeValues]) => ({ scopeType, scopeValues: scopeValues.sort((a, b) => a - b) }));
+  }
+
+  /** `PUT /roles/:roleKey/scopes` -- replaces (not merges) each SUPPLIED scopeType's whole row
+   *  set; a scopeType absent from `scopes` is left untouched (this endpoint is "here is the
+   *  complete new value for these scope types", not "here is the complete new value for every
+   *  scope type that has ever existed" -- an admin narrowing one scope type shouldn't have to
+   *  re-supply every other one it isn't touching). */
+  async putRoleScopes(roleKey: string, scopes: ReadonlyArray<{ scopeType: string; scopeValues: readonly number[] }>, actorId: number) {
+    const db = getDb();
+    const roleId = await this.requireRoleId(roleKey);
+
+    await db.transaction(async (tx) => {
+      const touchedTypes = scopes.map((s) => s.scopeType);
+      if (touchedTypes.length > 0) {
+        await tx.delete(roleScopes).where(and(eq(roleScopes.roleId, roleId), inArray(roleScopes.scopeType, touchedTypes as (typeof roleScopes.scopeType.enumValues)[number][])));
+      }
+      const rows = scopes.flatMap((s) =>
+        s.scopeValues.map((scopeRefId) => ({
+          roleId,
+          scopeType: s.scopeType as (typeof roleScopes.scopeType.enumValues)[number],
+          scopeRefId,
+          createdBy: actorId,
+        })),
+      );
+      if (rows.length > 0) await tx.insert(roleScopes).values(rows);
+    });
+
+    return this.getRoleScopes(roleKey);
+  }
+
+  /** `GET /roles/:roleKey/limits`. */
+  async getRoleLimits(roleKey: string): Promise<Array<{ limitKey: (typeof LIMIT_KEYS)[number]; limitValue: string }>> {
+    const db = getDb();
+    const roleId = await this.requireRoleId(roleKey);
+    const rows = await db.select({ limitKey: roleLimits.limitKey, limitValue: roleLimits.limitValue }).from(roleLimits).where(eq(roleLimits.roleId, roleId));
+    // roleLimits.limitKey is a plain varchar column (free-standing string, not a DB enum -- see
+    // access.ts's own comment on why), so the cast back to the closed DTO-level union is real,
+    // deliberate narrowing: every row here was written through `putRoleLimits`, which only ever
+    // accepts `RoleLimitEntrySchema`-validated keys, so the cast reflects a genuine runtime
+    // invariant, not a type-system workaround for careless code.
+    return rows as Array<{ limitKey: (typeof LIMIT_KEYS)[number]; limitValue: string }>;
+  }
+
+  /** `PUT /roles/:roleKey/limits` -- full replace of every limit row this role has (unlike scopes,
+   *  there is no natural "leave the rest alone" partial-key concept here -- a role's limit set is
+   *  small (<=5 keys) and the doc's own PUT semantics are simplest read as "this is now the
+   *  complete limit set"). */
+  async putRoleLimits(roleKey: string, limits: ReadonlyArray<{ limitKey: string; limitValue: string }>, actorId: number) {
+    const db = getDb();
+    const roleId = await this.requireRoleId(roleKey);
+
+    await db.transaction(async (tx) => {
+      await tx.delete(roleLimits).where(eq(roleLimits.roleId, roleId));
+      if (limits.length > 0) {
+        await tx.insert(roleLimits).values(limits.map((l) => ({ roleId, limitKey: l.limitKey, limitValue: l.limitValue, createdBy: actorId })));
+      }
+    });
+
+    return this.getRoleLimits(roleKey);
   }
 }

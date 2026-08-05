@@ -4,7 +4,7 @@
 // a deliberate design split this file follows exactly, not widened to owner the way this
 // codebase's own judgement calls elsewhere (e.g. settings.branch:edit) have done in the ABSENCE
 // of an explicit doc answer; here the doc gives one).
-import { Body, Controller, Get, Param, Patch, Post } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Put } from "@nestjs/common";
 
 import type { Actor } from "../../../common/auth/actor.js";
 import { CurrentActor } from "../../../common/auth/current-actor.decorator.js";
@@ -18,7 +18,16 @@ import { UserAdminService } from "../application/user-admin.service.js";
 // symbols, and even a missing required `description`) was accepted with a real 201 before this
 // fix -- confirmed empirically, not by code review alone. `users.controller.ts`'s own DTO import
 // already follows this correctly; this file did not, until now.
-import { CreateRoleDto, RoleKeyParamDto, RoleResponseDto, UpdateRoleDto } from "./dto/user-admin.dto.js";
+import {
+  CreateRoleDto,
+  PutRoleLimitsDto,
+  PutRoleScopesDto,
+  RoleKeyParamDto,
+  RoleLimitResponseDto,
+  RoleResponseDto,
+  RoleScopeResponseDto,
+  UpdateRoleDto,
+} from "./dto/user-admin.dto.js";
 
 @Controller("roles")
 export class RolesController {
@@ -50,5 +59,40 @@ export class RolesController {
   @Patch(":roleKey")
   async update(@Param() params: RoleKeyParamDto, @Body() body: UpdateRoleDto, @CurrentActor() actor: Actor): Promise<RoleResponseDto> {
     return this.userAdmin.updateRole(params.roleKey, body, Number(actor.userId));
+  }
+
+  // ---- Wave 10e: role_scope / role_limit (R-007 CRITICAL) -- same resource, same read/write role
+  // split as the rest of this controller (identity.role:list to view, :edit to change -- these are
+  // just more fields of the same role-administration resource, not a reason to mint new
+  // permission rows).
+
+  /** `GET /roles/:roleKey/scopes`. 404 on an unknown role. */
+  @RequirePermission("identity.role", "list")
+  @Get(":roleKey/scopes")
+  async getScopes(@Param() params: RoleKeyParamDto): Promise<RoleScopeResponseDto> {
+    return this.userAdmin.getRoleScopes(params.roleKey);
+  }
+
+  /** `PUT /roles/:roleKey/scopes` -- replaces each SUPPLIED scopeType's whole value set (see
+   *  user-admin.repository.ts's `putRoleScopes` for why a scopeType absent from the body is left
+   *  untouched rather than cleared). */
+  @RequirePermission("identity.role", "edit")
+  @Put(":roleKey/scopes")
+  async putScopes(@Param() params: RoleKeyParamDto, @Body() body: PutRoleScopesDto, @CurrentActor() actor: Actor): Promise<RoleScopeResponseDto> {
+    return this.userAdmin.putRoleScopes(params.roleKey, body.scopes, Number(actor.userId));
+  }
+
+  /** `GET /roles/:roleKey/limits`. */
+  @RequirePermission("identity.role", "list")
+  @Get(":roleKey/limits")
+  async getLimits(@Param() params: RoleKeyParamDto): Promise<RoleLimitResponseDto> {
+    return this.userAdmin.getRoleLimits(params.roleKey);
+  }
+
+  /** `PUT /roles/:roleKey/limits` -- full replace of this role's entire limit set. */
+  @RequirePermission("identity.role", "edit")
+  @Put(":roleKey/limits")
+  async putLimits(@Param() params: RoleKeyParamDto, @Body() body: PutRoleLimitsDto, @CurrentActor() actor: Actor): Promise<RoleLimitResponseDto> {
+    return this.userAdmin.putRoleLimits(params.roleKey, body.limits, Number(actor.userId));
   }
 }

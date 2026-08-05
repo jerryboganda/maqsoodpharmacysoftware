@@ -4,7 +4,7 @@
 // docs/system-analysis/19-mysql-schema-blueprint.md §T14-T19 (role/permission/role_permission/
 // role_scope/role_policy/user_role) and 00b-owner-decisions-and-requirements.md D16/R6
 // (tenant_id) and P1 (role-appropriate options, P1.5).
-import { boolean, datetime, index, mysqlEnum, mysqlTable, primaryKey, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { boolean, datetime, decimal, index, mysqlEnum, mysqlTable, primaryKey, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 import { appUsers } from "./identity";
 import { auditColumns, fkBigInt, fkBigIntNotNull, idPk, softDeleteColumns, TIMESTAMP_FSP } from "./_shared";
 import { tenants } from "./tenant";
@@ -129,5 +129,62 @@ export const userRoles = mysqlTable(
   (table) => ({
     pk: primaryKey({ columns: [table.userId, table.roleId] }),
     roleIdx: index("ix_user_role_role").on(table.roleId),
+  }),
+);
+
+/**
+ * Wave 10e (R-007 CRITICAL, 12-risks-gaps.md): "row-level scope" -- `permissions.service.ts`'s own
+ * header comment has documented this exact gap since Wave 1 ("role_scope/role_limit ... are not
+ * modelled in access.ts yet -- real follow-up work, not assumed away"). One row per
+ * (role, scopeType, a single allowed value) -- `PUT /roles/:roleKey/scopes` replaces a scopeType's
+ * whole row set atomically (delete-then-insert, same "replace, not delta" semantics
+ * user-admin.repository.ts's `replaceRoles` already establishes for `user_role`), so "this role
+ * can touch warehouses 3 and 7" is two rows, not one row with an embedded array.
+ *
+ * `scopeRefId` is a deliberately POLYMORPHIC soft reference (no single `.references()` target is
+ * possible since it points at a different table depending on `scopeType`) -- `warehouse` ->
+ * `branch.branch_id` (D17/tenant.ts: "warehouse_id is branch_id in this package, no separate
+ * warehouse table"), `cash_bank_account` -> `cash_bank_account.cash_bank_account_id`,
+ * `voucher_category` -> `option_item.option_item_id` (the seeded `accounting.voucher_category`
+ * list). `price_type` and `supplier_category` are accepted by the schema/enum (18-api-plan.md
+ * §0.13.3 names both) but have no corresponding table to reference AT ALL yet in this codebase (no
+ * price-tier system, no supplier-categorisation concept beyond `purchase_category` which classifies
+ * DOCUMENTS not suppliers) -- see role-scope.service.ts's own header comment for why enforcement
+ * of those two scope types is honestly deferred, not silently faked.
+ */
+export const roleScopes = mysqlTable(
+  "role_scope",
+  {
+    roleId: fkBigIntNotNull("role_id").references(() => roles.roleId),
+    scopeType: mysqlEnum("scope_type", ["warehouse", "cash_bank_account", "price_type", "supplier_category", "voucher_category"]).notNull(),
+    scopeRefId: fkBigIntNotNull("scope_ref_id"),
+    ...auditColumns(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.roleId, table.scopeType, table.scopeRefId] }),
+    roleIdx: index("ix_role_scope_role").on(table.roleId, table.scopeType),
+  }),
+);
+
+/**
+ * Wave 10e (R-007 CRITICAL): numeric per-role posting limits, evaluated INSIDE the write
+ * transaction (18-api-plan.md §0.13.3 -- "returning 403 AUTHZ.LIMIT_EXCEEDED ... and no database
+ * side effect"), never at the permission-check layer alone (a limit needs the actual attempted
+ * value, which only the write handler has). `limitKey` is a free-standing string, not an enum --
+ * 18-api-plan.md names `max_txn_value`/`max_qty`/`max_line_disc_pct`/`max_inv_flat_disc`/
+ * `max_price_delta_pct`; see role-limit.service.ts's own header comment for exactly which of these
+ * this wave actually wires into a real write path (the discount-percentage ones have no live
+ * caller yet -- sale-invoices.service.ts 422s any non-zero discount input at all, M-5, blocked).
+ */
+export const roleLimits = mysqlTable(
+  "role_limit",
+  {
+    roleId: fkBigIntNotNull("role_id").references(() => roles.roleId),
+    limitKey: varchar("limit_key", { length: 64 }).notNull(),
+    limitValue: decimal("limit_value", { precision: 18, scale: 4 }).notNull(),
+    ...auditColumns(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.roleId, table.limitKey] }),
   }),
 );

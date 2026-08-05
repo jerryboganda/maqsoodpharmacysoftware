@@ -111,6 +111,38 @@ export const UpdateRoleSchema = z
   });
 export class UpdateRoleDto extends createZodDto(UpdateRoleSchema) {}
 
+// ---- Wave 10e: GET/PUT /roles/:roleKey/scopes and /limits (R-007 CRITICAL) --------------------
+
+const SCOPE_TYPES = ["warehouse", "cash_bank_account", "price_type", "supplier_category", "voucher_category"] as const;
+export const RoleScopeEntrySchema = z.object({
+  scopeType: z.enum(SCOPE_TYPES),
+  scopeValues: z.array(z.number().int().positive()),
+});
+export const RoleScopeResponseSchema = z.array(RoleScopeEntrySchema);
+export class RoleScopeResponseDto extends createZodDto(RoleScopeResponseSchema) {}
+
+export const PutRoleScopesSchema = z.object({ scopes: z.array(RoleScopeEntrySchema) });
+export class PutRoleScopesDto extends createZodDto(PutRoleScopesSchema) {}
+
+// 18-api-plan.md §0.13.3's own five limit keys. A closed enum here (not a free string) --
+// role-limit.service.ts is the one place that actually EVALUATES a limitKey against a real
+// attempted value, and it can only evaluate keys it has real code for; accepting an arbitrary
+// string here would let an admin "set" a limit that silently never does anything, which is worse
+// than rejecting it at the DTO boundary.
+export const LIMIT_KEYS = ["max_txn_value", "max_qty", "max_line_disc_pct", "max_inv_flat_disc", "max_price_delta_pct"] as const;
+export const RoleLimitEntrySchema = z.object({
+  limitKey: z.enum(LIMIT_KEYS),
+  limitValue: z.string().regex(/^\d+(\.\d{1,4})?$/, "limitValue must be a non-negative decimal string"),
+});
+export const RoleLimitResponseSchema = z.array(RoleLimitEntrySchema);
+export class RoleLimitResponseDto extends createZodDto(RoleLimitResponseSchema) {}
+
+export const PutRoleLimitsSchema = z.object({ limits: z.array(RoleLimitEntrySchema) });
+export class PutRoleLimitsDto extends createZodDto(PutRoleLimitsSchema) {}
+
+export type PutRoleScopesInput = z.infer<typeof PutRoleScopesSchema>;
+export type PutRoleLimitsInput = z.infer<typeof PutRoleLimitsSchema>;
+
 export const PermissionResponseSchema = z.object({
   permissionId: z.number().int(),
   code: z.string(),

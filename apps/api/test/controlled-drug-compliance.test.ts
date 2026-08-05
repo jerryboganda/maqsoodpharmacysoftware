@@ -219,7 +219,16 @@ describe("Wave 8: controlled-drug compliance (U-062/D18/R7)", () => {
       method: "POST",
       url: "/reports/controlled-drug-register/run",
       token: manager.token,
-      body: { filters: { dateFrom: localToday(), dateTo: localToday(), itemId: fx.paraItemId } },
+      // limit: MAX_PAGE_SIZE (200, see report-helpers.ts) -- the default page size (50) sorts
+      // today's PARA500 dispensing events oldest-first (report's own tiebreak on a same-day
+      // range), and this shared local dev database has accumulated more than 50 of them across
+      // this project's own long test history. Without an explicit larger limit, this test's OWN
+      // freshly-posted row (necessarily the newest / highest saleInvoiceLineId of the day) sorts
+      // past page 1 and the .find() below spuriously returns undefined -- found live 2026-08-05
+      // when the count crossed 50 for the first time. CI is unaffected (its MySQL service
+      // container starts empty every run), but a long-lived local dev DB will keep growing this
+      // count, so pin a limit generous enough to never plausibly be exceeded in one local dev day.
+      body: { filters: { dateFrom: localToday(), dateTo: localToday(), itemId: fx.paraItemId }, limit: 200 },
     });
     expect(res.status).toBe(201); // POST /reports/:reportId/run has no @HttpCode override -- Nest's POST default
     const row = res.json.data.find((r) => r.dispensingNote === DISPENSING_NOTE);
