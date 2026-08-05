@@ -241,6 +241,16 @@ export const saleInvoiceLines = mysqlTable(
       .notNull(),
     expiryAtSale: date("expiry_at_sale"), // denormalised from the lot for dispensing audit
     fefoOverridden: boolean("fefo_overridden").notNull().default(false), // R4.3: cashier overrides are audited
+    // U-062/D18/R7: "whatever record-keeping DRAP requires, capture it as a natural extension of
+    // the sale flow already being designed -- a controlled-substance sale prompts one extra,
+    // clearly-labelled field at the point it's already being rung up, never a separate compliance
+    // module." One free-text field, not a rigid structured buyer/CNIC/prescription-number scheme --
+    // the exact structure DRAP/Narcotic Substances Act 1997 requires is still open pending
+    // pharmacist/regulatory consultant sign-off (R7), and this analysis does not invent
+    // regulated-domain requirements from web research alone. Nullable and unenforced: the frontend
+    // surfaces it only when the line's item is `is_controlled_drug`, but nothing here validates or
+    // requires it, so this cannot block a sale on an invented rule.
+    dispensingNote: varchar("dispensing_note", { length: 500 }),
     legacyRowId: fkBigInt("legacy_row_id"),
     ...auditColumns(),
   },

@@ -43,6 +43,20 @@
 //       PICKED for this task (no existing convention names a number for purchase-order staleness
 //       anywhere in this codebase or docs/system-analysis) -- documented here as exactly that: a
 //       choice, not a discovered constant.
+//   (e) licence_expiring       / branch          / owner -- Wave 8 (U-062/D18/R7): branches
+//       whose `drugLicenceExpiryDate` is set and falls within 60 days (already-lapsed included).
+//       "60 days" is, like (d)'s "7 days", a defensible default this task picked -- no DRAP
+//       instrument confirms a renewal-notice window (R7's own doc comment: full compliance scope
+//       is still open pending professional sign-off), so this is a generic "don't let a licence
+//       lapse unnoticed" convenience, not a legal deadline. Recipient is `owner` (not
+//       `pharmacy_manager` like (a)-(c)): licence identity is tenant/branch business-identity
+//       data, and `settings.branch:edit` -- the permission that can actually act on this alert --
+//       is granted to owner/sys_admin/pharmacy_manager, but `owner` is this file's closest
+//       existing analogue to "who owns business-identity data" (D17's NTN/STRN framing). Scoped
+//       by `tenantId` ONLY, not `scope.branchId` like (a)-(d) -- deliberately: a licence belongs
+//       to a SPECIFIC branch, and the owner (D21: "administers across all his sites") needs to
+//       see every one of their tenant's branches here, not just whichever branch the calling
+//       actor's own session happens to resolve to.
 //
 // UPSERT mechanics: `reconcileKind` deletes any existing row for (tenantId, kind, sourceType)
 // whose sourceId is no longer in the freshly-computed live set (condition cleared -> DELETE, this
@@ -61,7 +75,7 @@
 // read, mark-all-read, against the four scan-computed kinds above.
 import { Injectable } from "@nestjs/common";
 import { and, desc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
-import { getDb, items, notifications, purchaseOrders, stockAdjustments, stockBalances, stockLots } from "@pharmacy/db";
+import { branches, getDb, items, notifications, purchaseOrders, stockAdjustments, stockBalances, stockLots } from "@pharmacy/db";
 
 import type { Actor, RoleKey } from "../../../common/auth/actor.js";
 import { AppException } from "../../../common/errors/index.js";
@@ -83,6 +97,26 @@ const LOW_STOCK_THRESHOLD_UNITS = 20;
 const EXPIRY_RISK_DAYS = 30;
 /** A defensible default this task picked (no existing convention names one) -- see header comment. */
 const PURCHASE_ORDER_STALE_DAYS = 7;
+/** A defensible default this task picked (no DRAP instrument confirms a window) -- see header
+ *  comment condition (e). */
+const LICENCE_EXPIRY_WARNING_DAYS = 60;
+
+/** For a Drizzle `gte`/`lte`/`eq` filter against a `date()`-mode column (here: `stock_lot.
+ *  expiry_date`, `branch.drug_licence_expiry_date`) -- mirrors reporting/application/
+ *  report-helpers.ts's `businessDateParam` exactly (same bug, same fix, different module; see
+ *  that function's own doc comment for the full root-cause writeup, re-confirmed live here via
+ *  `.toSQL()` before this fix was written: `lte(stockLots.expiryDate, someDate)` serializes to
+ *  `PARAMS: ["...T00:00:00.000Z"]`, which MySQL's DATE comparison does not reliably match,
+ *  meaning this file's own condition (b) `expiry_risk` scan silently never matched a real
+ *  boundary-date lot before this fix). Not imported from report-helpers.ts -- that file is
+ *  reporting-module-scoped and this module has no shared home for it yet; duplicated rather than
+ *  reaching across module boundaries for one one-line cast. */
+function dateOnlyParam(d: Date): Date {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}` as unknown as Date;
+}
 
 type Severity = "info" | "warning" | "critical";
 
@@ -256,7 +290,7 @@ export class NotificationService {
             eq(stockLots.tenantId, scope.tenantId),
             eq(stockLots.branchId, scope.branchId),
             isNotNull(stockLots.expiryDate),
-            lte(stockLots.expiryDate, horizon),
+            lte(stockLots.expiryDate, dateOnlyParam(horizon)), // see dateOnlyParam's doc comment -- real bug, fixed here
             sql`${stockBalances.qtyOnHand} > 0`,
           ),
         );
@@ -353,6 +387,48 @@ export class NotificationService {
             title: `Purchase order pending: ${r.docNumber}`,
             body: `Purchase order ${r.docNumber} has been "${r.orderStatus}" for ${daysOpen} day(s) -- follow up with the supplier or close it out.`,
             link: `/purchase-orders/${r.purchaseOrderId}`,
+          };
+        }),
+      );
+
+      // ---- (e) branch DRAP licences expiring within 60 days (lapsed included) ----------------
+      // Tenant-wide, not branch-scoped -- see this file's header comment for condition (e).
+      const licenceHorizon = new Date(asOf.getTime() + LICENCE_EXPIRY_WARNING_DAYS * MS_PER_DAY);
+      const licenceRows = await tx
+        .select({
+          branchId: branches.branchId,
+          branchName: branches.name,
+          drugSaleLicenceNo: branches.drugSaleLicenceNo,
+          drugLicenceExpiryDate: branches.drugLicenceExpiryDate,
+        })
+        .from(branches)
+        .where(
+          and(
+            eq(branches.tenantId, scope.tenantId),
+            isNotNull(branches.drugLicenceExpiryDate),
+            lte(branches.drugLicenceExpiryDate, dateOnlyParam(licenceHorizon)),
+          ),
+        );
+
+      await this.reconcileKind(
+        tx,
+        scope.tenantId,
+        "licence_expiring",
+        "branch",
+        licenceRows.map((r): AlertRow => {
+          if (r.drugLicenceExpiryDate === null) throw new Error(`branch ${r.branchId} unexpectedly has no licence expiry date`); // unreachable; SQL filter guarantees non-null
+          const daysToExpiry = Math.round((r.drugLicenceExpiryDate.getTime() - asOf.getTime()) / MS_PER_DAY);
+          const lapsed = daysToExpiry < 0;
+          const licenceLabel = r.drugSaleLicenceNo ? ` (${r.drugSaleLicenceNo})` : "";
+          return {
+            sourceId: r.branchId,
+            recipientRoleKey: "owner",
+            severity: lapsed ? "critical" : "warning",
+            title: lapsed ? `Drug sale licence lapsed: ${r.branchName}` : `Drug sale licence expiring soon: ${r.branchName}`,
+            body: lapsed
+              ? `${r.branchName}'s drug sale licence${licenceLabel} lapsed ${Math.abs(daysToExpiry)} day(s) ago -- renew and update it in branch settings.`
+              : `${r.branchName}'s drug sale licence${licenceLabel} expires in ${daysToExpiry} day(s) -- renew and update it in branch settings.`,
+            link: `/settings/branches/${r.branchId}`,
           };
         }),
       );

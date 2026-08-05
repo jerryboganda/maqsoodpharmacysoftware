@@ -35,6 +35,14 @@ const SaleLineSchema = z.object({
   /** Discounts are a later increment (rounding ladder M-5) -- any non-zero value is a 422. */
   discountPercent: zDecimalString("discountPercent").optional(),
   itemFlatDiscount: zDecimalString("itemFlatDiscount").optional(),
+  /** U-062/D18/R7 (docs/system-analysis/00b-owner-decisions-and-requirements.md): one free-text
+   *  field the frontend surfaces only when this line's item is `is_controlled_drug`, per R7's
+   *  design commitment ("one extra, clearly-labelled field at the point it's already being rung
+   *  up"). Never required and never validated against any invented rule -- the exact record DRAP
+   *  requires is still open pending pharmacist/regulatory consultant sign-off. Accepted for ANY
+   *  line (not just controlled ones) since enforcing the flag here would itself be inventing a
+   *  requirement; sale-invoices.service.ts persists it verbatim on sale_invoice_line.*/
+  dispensingNote: z.string().max(500).optional(),
 });
 
 const SalePaymentSchema = z.object({

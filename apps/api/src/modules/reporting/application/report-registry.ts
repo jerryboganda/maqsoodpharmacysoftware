@@ -69,4 +69,13 @@ export const REPORT_DEFINITIONS: readonly ReportDefinition[] = [
     description: "Items with on-hand quantity below a configurable threshold (default 20 units).",
     group: "inventory",
   },
+  {
+    reportId: "controlled-drug-register",
+    title: "Controlled drug register",
+    description:
+      "Every posted sale line for a controlled-drug item -- date, item, batch, quantity, dispensing note, and dispensing user. " +
+      "U-062/D18/R7: the exact record DRAP requires is still open pending pharmacist/regulatory consultant sign-off; this report " +
+      "surfaces what the system already captures, not an invented legal register.",
+    group: "sales",
+  },
 ] as const;

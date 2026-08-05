@@ -100,6 +100,10 @@ interface PlannedLine {
   readonly expiryAtSale: Date | null;
   readonly lineGrossAmount: string;
   readonly lineCostAmount: string;
+  /** U-062/D18/R7: verbatim from the requested line's own `dispensingNote` (DTO), null when
+   *  omitted. Every FEFO slice of one requested line carries the SAME note -- it describes the
+   *  dispensing event for that item, not a specific lot. */
+  readonly dispensingNote: string | null;
 }
 
 interface PlannedPayment {
@@ -408,6 +412,7 @@ export class SaleInvoicesService {
           expiryAtSale: allocation.expiryDate,
           lineGrossAmount: costAmount(allocation.qty, unitSalePrice),
           lineCostAmount: costAmount(allocation.qty, item.avgUnitCost), // COGS at current avg (C-6)
+          dispensingNote: line.dispensingNote ?? null,
         });
         lineAllocations.push({ ...allocation, itemId: item.itemId });
       }
@@ -620,6 +625,7 @@ export class SaleInvoicesService {
           unitCost: line.unitCost,
           lineCostAmount: line.lineCostAmount,
           expiryAtSale: line.expiryAtSale,
+          dispensingNote: line.dispensingNote,
           createdBy: actorId,
           createdSource: "api" as const,
         })),

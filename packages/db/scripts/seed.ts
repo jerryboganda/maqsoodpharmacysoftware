@@ -864,6 +864,26 @@ const PERMISSIONS: ReadonlyArray<{
     roles: ["owner", "sys_admin", "pharmacy_manager"],
   },
 
+  // Wave 8 (U-062/D18/R7): `settings.branch` list/edit -- the admin surface for editing a
+  // `branch` row (name/address/city, plus the two new DRAP licence-tracking columns). No 09
+  // §I.4 row exists for "branch administration" either (checked; the matrix predates D16's
+  // multi-branch expansion entirely), so this follows the exact same reasoning
+  // `settings.option`'s own comment above already gives for an identical gap: owner/sys_admin/
+  // pharmacy_manager as the reasonable admin default pending a real matrix sign-off.
+  {
+    resource: "settings.branch",
+    action: "list",
+    name: "List branches",
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
+  {
+    resource: "settings.branch",
+    action: "edit",
+    name: "Edit a branch (identity, address, DRAP licence tracking)",
+    isSensitive: true,
+    roles: ["owner", "sys_admin", "pharmacy_manager"],
+  },
+
   // `sale.cash`/`sale.return` cancel/reverse -- undoing a posted cash sale or sale return. 09
   // §I.4 has no row literally named "cancel"/"reverse" for either resource, but it DOES have the
   // closest real analogue: `sale.cash` "unpost / edit-posted" is the only row in the whole matrix

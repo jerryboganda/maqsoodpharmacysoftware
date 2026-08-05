@@ -2,11 +2,14 @@
 // caching", §10.4 "Admin UI contract" (only enabled values appear in pickers), P1.5 (options
 // filtered by the caller's permission, then re-checked on submit).
 import { Injectable, NotFoundException } from "@nestjs/common";
+import { and, eq } from "drizzle-orm";
+import { branches, getDb } from "@pharmacy/db";
 
 import type { Actor } from "../../../common/auth/actor.js";
 import { BusinessRuleException } from "../../../common/errors/index.js";
 import { TenantContextService } from "../../inventory/infrastructure/tenant-context.service.js";
 import type { CreateOptionItemInput, UpdateOptionItemInput } from "../api/dto/option-item.dto.js";
+import type { UpdateBranchInput } from "../api/dto/branch.dto.js";
 import type { OptionValue } from "../domain/option-value.js";
 import type { OptionItemRow, OptionListSummary } from "../infrastructure/options.repository.js";
 import { OptionsRepository } from "../infrastructure/options.repository.js";
@@ -160,6 +163,68 @@ export class SettingsService {
     return this.options.setDefault(list.optionListId, optionItemId, actorId);
   }
 
+  // ---- branch admin (Wave 8, U-062/D18/R7 -- see branch.dto.ts's header comment) ------------
+  //
+  // No BranchesRepository: two small, single-table methods don't earn a repository layer of
+  // their own (same call OptionsRepository's own file did NOT make for e.g. a one-off lookup --
+  // this mirrors how other thin services in this module access `getDb()` directly rather than
+  // wrapping every table in a repository class).
+
+  /** `GET /branches` -- every branch belonging to the actor's tenant (D16 isolation: scoped by
+   *  tenantId, never a bare unscoped `SELECT * FROM branch`), including inactive ones -- the
+   *  admin view, same "show everything, let the UI filter" convention `listOptionListItems`
+   *  above already establishes for its own admin surface. */
+  async listBranches(actor: Actor) {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
+    const db = getDb();
+    const rows = await db.select().from(branches).where(eq(branches.tenantId, tenantId));
+    return rows.map(shapeBranch);
+  }
+
+  /** `PATCH /branches/:branchId`. 404 if the branch doesn't exist or belongs to a different
+   *  tenant (D16 isolation -- the WHERE clause scopes by both branchId AND tenantId together, so
+   *  a cross-tenant id never even reveals existence). */
+  async updateBranch(branchId: number, input: UpdateBranchInput, actor: Actor) {
+    const { tenantId } = await this.tenantContext.resolveScope(actor);
+    const actorId = Number(actor.userId);
+    const db = getDb();
+
+    const [existing] = await db.select().from(branches).where(and(eq(branches.branchId, branchId), eq(branches.tenantId, tenantId)));
+    if (!existing) {
+      throw new NotFoundException(`No branch ${branchId} for this tenant.`);
+    }
+
+    // Conditional spread per field, same convention OptionsRepository.updateItem already
+    // establishes for an identical "PATCH, every field optional" shape: Drizzle's `.set()` does
+    // NOT skip `undefined`-valued keys on its own (an unconditional `{name: input.name}` would
+    // write a literal SQL NULL, or crash the mysql2 parameter binder, for every field the caller
+    // omitted) -- each field is only included when the caller actually sent it.
+    await db
+      .update(branches)
+      .set({
+        ...(input.name !== undefined && { name: input.name }),
+        ...(input.addressLine1 !== undefined && { addressLine1: input.addressLine1 }),
+        ...(input.addressLine2 !== undefined && { addressLine2: input.addressLine2 }),
+        ...(input.city !== undefined && { city: input.city }),
+        ...(input.drugSaleLicenceNo !== undefined && { drugSaleLicenceNo: input.drugSaleLicenceNo }),
+        // A `date()`-mode column WRITE (`.set()`/`.values()`) wants an actual `Date`, matching
+        // every other date-column write in this codebase (e.g. sale-invoices.service.ts's own
+        // `new Date(`${dto.documentDate}T00:00:00`)`) -- NOT a bare string, and NOT
+        // report-helpers.ts's `businessDateParam`, which is a narrower, different fix for a
+        // `gte`/`lte`/`eq` QUERY FILTER's own serialization bug (that function's own doc comment)
+        // and does not apply to this write path.
+        ...(input.drugLicenceExpiryDate !== undefined && {
+          drugLicenceExpiryDate: input.drugLicenceExpiryDate === null ? null : new Date(`${input.drugLicenceExpiryDate}T00:00:00`),
+        }),
+        updatedBy: actorId,
+      })
+      .where(eq(branches.branchId, branchId));
+
+    const [updated] = await db.select().from(branches).where(eq(branches.branchId, branchId));
+    if (!updated) throw new Error(`branch ${branchId} vanished immediately after its own update`); // unreachable; defensive
+    return shapeBranch(updated);
+  }
+
   // ---- helpers ------------------------------------------------------------------------------
 
   private async requireList(listCode: string, tenantId: number) {
@@ -178,4 +243,26 @@ export class SettingsService {
     }
     return item;
   }
+}
+
+// ---- module-local helpers -------------------------------------------------------------------
+
+/** A `date()`-mode column comes back from Drizzle as a real JS `Date` (mysql2's own
+ *  `dateStrings` config only governs the raw driver layer -- Drizzle re-hydrates it per the
+ *  column's declared mode), which `JSON.stringify` renders as a full
+ *  `"2026-08-15T00:00:00.000Z"` timestamp -- confirmed live via this wave's own integration test
+ *  before this fix was written (test 3 in controlled-drug-compliance.test.ts originally failed on
+ *  exactly this). Safe to slice via `.toISOString()` here specifically because the source is a
+ *  DATE column with no time-of-day component to begin with (unlike `common/dates/business-date.ts`'s
+ *  `localToday()`, which is about "now", a real instant, and needs the explicit-timezone
+ *  `Intl.DateTimeFormat` treatment instead) -- mirrors reporting/application/report-helpers.ts's
+ *  own identical `toDateOnly` one-for-one, duplicated rather than reaching into a different
+ *  module for one line, same call this wave already made for notification.service.ts's
+ *  `dateOnlyParam`. */
+function toDateOnlyOrNull(d: Date | null): string | null {
+  return d === null ? null : d.toISOString().slice(0, 10);
+}
+
+function shapeBranch<T extends { drugLicenceExpiryDate: Date | null }>(row: T): Omit<T, "drugLicenceExpiryDate"> & { drugLicenceExpiryDate: string | null } {
+  return { ...row, drugLicenceExpiryDate: toDateOnlyOrNull(row.drugLicenceExpiryDate) };
 }

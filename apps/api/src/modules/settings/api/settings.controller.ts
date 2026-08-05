@@ -1,12 +1,13 @@
 // Blueprint: docs/system-analysis/17-technical-blueprint.md Part 10 -- the P1 "options are
 // data" API surface. Thin controller: validates params, resolves the actor, calls exactly one
 // application service (§2.2).
-import { Controller, Get, Param } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch } from "@nestjs/common";
 
 import type { Actor } from "../../../common/auth/actor.js";
 import { CurrentActor } from "../../../common/auth/current-actor.decorator.js";
 import { RequirePermission } from "../../../common/authz/require-permission.decorator.js";
 import { SettingsService } from "../application/settings.service.js";
+import { BranchIdParamDto, UpdateBranchDto } from "./dto/branch.dto.js";
 import { OptionSetKeyParamDto, type OptionValueResponseDto } from "./dto/option-value.dto.js";
 
 @Controller("settings")
@@ -34,5 +35,25 @@ export class SettingsController {
         isDefault: value.isDefault,
         meta: value.meta,
       }));
+  }
+
+  // ---- branch admin (Wave 8, U-062/D18/R7 -- see branch.dto.ts's header comment for why this
+  // exists: D17 already calls branch/tenant identity fields "admin-editable settings", but no
+  // endpoint anywhere in this codebase actually let anyone edit a `branch` row) --------------
+
+  /** `GET /settings/branches` -- every branch belonging to the actor's own tenant. */
+  @RequirePermission("settings.branch", "list")
+  @Get("branches")
+  async listBranches(@CurrentActor() actor: Actor) {
+    return this.settings.listBranches(actor);
+  }
+
+  /** `PATCH /settings/branches/:branchId` -- name/address/city plus the two DRAP licence-tracking
+   *  fields (drugSaleLicenceNo/drugLicenceExpiryDate). See branch.dto.ts for the full field list
+   *  and what is deliberately excluded. */
+  @RequirePermission("settings.branch", "edit")
+  @Patch("branches/:branchId")
+  async updateBranch(@Param() params: BranchIdParamDto, @Body() body: UpdateBranchDto, @CurrentActor() actor: Actor) {
+    return this.settings.updateBranch(params.branchId, body, actor);
   }
 }

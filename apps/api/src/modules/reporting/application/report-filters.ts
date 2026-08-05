@@ -50,6 +50,15 @@ export const ArAgingFiltersSchema = z.object({
   asOfDate: zDateString.optional(),
 });
 
+/** Wave 8 (U-062/D18/R7): the "controlled-medicines register" the owner asked whether the new
+ *  system should keep (14-unknowns-and-questions.md question 30) -- see reports.service.ts's
+ *  `runControlledDrugRegister` for what it actually reports and does not invent. */
+export const ControlledDrugRegisterFiltersSchema = z.object({
+  dateFrom: zDateString.optional(),
+  dateTo: zDateString.optional(),
+  itemId: zId.optional(),
+});
+
 export const LowStockFiltersSchema = z.object({
   itemId: zId.optional(),
   /** Decimal STRING (Rule M) -- defaults to "20.0000" (PharmacyDashboardPage.svelte's committed

@@ -13,7 +13,7 @@
 // visibility (R1), options (P1) and settings" -- confirmed again at D21 ("Both -- me across sites,
 // staff per-site").
 import { sql } from "drizzle-orm";
-import { boolean, index, mysqlTable, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { boolean, date, index, mysqlTable, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 import { auditColumns, fkBigInt, fkBigIntNotNull, idPk, softDeleteColumns } from "./_shared";
 
 /**
@@ -73,6 +73,16 @@ export const branches = mysqlTable(
     addressLine1: varchar("address_line1", { length: 255 }),
     addressLine2: varchar("address_line2", { length: 255 }),
     city: varchar("city", { length: 80 }),
+    // U-062/D18/R7 (docs/system-analysis/00b-owner-decisions-and-requirements.md): a drug-sale
+    // licence under the Drugs Act 1976 is issued per physical premises, so this lives on `branch`
+    // (the physical/operational site -- see this table's own header comment), mirroring D17's
+    // ntnNo/strnNo pattern on `tenant` exactly: an admin-editable identity field, nullable because
+    // most tenants have not entered it yet, never a value baked into config or code. Whether DRAP
+    // requires this AT ALL for a retail dispensing pharmacy (vs. purely upstream manufacturers) is
+    // still open pending pharmacist/regulatory consultant sign-off (R7) -- these two columns exist
+    // so the record CAN be kept once that's confirmed; nothing downstream assumes they are filled.
+    drugSaleLicenceNo: varchar("drug_sale_licence_no", { length: 64 }),
+    drugLicenceExpiryDate: date("drug_licence_expiry_date"),
     isDefault: boolean("is_default").notNull().default(false),
     isActive: boolean("is_active").notNull().default(true),
     // Blueprint §4.3 functional-unique-index pattern ("exactly one default per group"), applied

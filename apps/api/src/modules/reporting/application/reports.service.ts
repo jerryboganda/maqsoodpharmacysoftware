@@ -12,6 +12,7 @@
 import { Injectable } from "@nestjs/common";
 import { and, asc, desc, eq, gte, lte, sql, type SQL } from "drizzle-orm";
 import {
+  appUsers,
   customers,
   getDb,
   items,
@@ -20,6 +21,7 @@ import {
   saleInvoiceLines,
   saleInvoices,
   stockBalances,
+  stockLots,
   suppliers,
 } from "@pharmacy/db";
 import { Money, Quantity } from "@pharmacy/money";
@@ -32,6 +34,7 @@ import type { RunReportBodyInput } from "../api/dto/report.dto.js";
 import {
   ApAgingFiltersSchema,
   ArAgingFiltersSchema,
+  ControlledDrugRegisterFiltersSchema,
   ExpiryReportFiltersSchema,
   LowStockFiltersSchema,
   parseFilters,
@@ -88,9 +91,11 @@ export class ReportsService {
         return this.runArAging(scope, filters, page);
       case "low-stock":
         return this.runLowStock(scope, filters, page);
+      case "controlled-drug-register":
+        return this.runControlledDrugRegister(scope, filters, page);
       default:
         // Unreachable: `run()` already 404s any reportId not in REPORT_DEFINITIONS, and this
-        // switch covers every entry in that registry (kept 1:1 by hand -- eight reports total).
+        // switch covers every entry in that registry (kept 1:1 by hand -- nine reports total).
         throw new Error(`reportId "${reportId}" is registered but has no dispatch case`);
     }
   }
@@ -502,6 +507,67 @@ export class ReportsService {
       ...paginate(sorted, page, (r) => ({ key: String(r.itemId), label: r.itemName, qtyOnHand: r.qtyOnHand })),
       thresholdQty: thresholdResult.value.toDb(),
     };
+  }
+
+  // ---- controlled-drug-register (Wave 8, U-062/D18/R7) ------------------------------------------
+
+  /** Every posted `sale_invoice_line` whose item is `is_controlled_drug`, one row per line (a
+   *  requested line that FEFO-split across multiple lots -- sale-invoices.service.ts's own
+   *  `PlannedLine` comment -- appears as multiple rows here, one per lot, matching the real
+   *  physical dispensing event per lot). This directly answers U-062's original question ("are
+   *  there any records the drug regulator requires you to keep ... a controlled-medicines
+   *  register ... we found nothing about this anywhere in your current software" --
+   *  14-unknowns-and-questions.md question 30): now there is something, without inventing the
+   *  legal retention period, required fields, or countersignature rule -- all still open pending
+   *  professional sign-off (R7's own doc comment). */
+  private async runControlledDrugRegister(scope: TenantBranchScope, rawFilters: Record<string, unknown>, page: Page) {
+    const f = parseFilters(ControlledDrugRegisterFiltersSchema, rawFilters);
+    assertDateRange(f.dateFrom, f.dateTo);
+    const db = getDb();
+
+    const conditions = [
+      eq(saleInvoices.tenantId, scope.tenantId),
+      eq(saleInvoices.branchId, scope.branchId),
+      eq(saleInvoices.status, "posted"),
+      eq(items.isControlledDrug, true),
+    ];
+    if (f.dateFrom !== undefined) conditions.push(gte(saleInvoices.postingDate, businessDateParam(f.dateFrom)));
+    if (f.dateTo !== undefined) conditions.push(lte(saleInvoices.postingDate, businessDateParam(f.dateTo)));
+    if (f.itemId !== undefined) conditions.push(eq(saleInvoiceLines.itemId, f.itemId));
+
+    const rows = await db
+      .select({
+        saleInvoiceLineId: saleInvoiceLines.saleInvoiceLineId,
+        docNumber: saleInvoices.docNumber,
+        postingDate: saleInvoices.postingDate,
+        itemId: items.itemId,
+        itemName: items.name,
+        batchNo: stockLots.batchNo,
+        qty: saleInvoiceLines.qtyBase,
+        dispensingNote: saleInvoiceLines.dispensingNote,
+        dispensedByUserId: saleInvoices.postedBy,
+        dispensedByName: appUsers.displayName,
+      })
+      .from(saleInvoiceLines)
+      .innerJoin(saleInvoices, eq(saleInvoiceLines.saleInvoiceId, saleInvoices.saleInvoiceId))
+      .innerJoin(items, eq(items.itemId, saleInvoiceLines.itemId))
+      .leftJoin(stockLots, eq(stockLots.stockLotId, saleInvoiceLines.stockLotId))
+      .leftJoin(appUsers, eq(appUsers.userId, saleInvoices.postedBy))
+      .where(and(...conditions))
+      .orderBy(desc(saleInvoices.postingDate), asc(saleInvoiceLines.saleInvoiceLineId));
+
+    return paginate(rows, page, (r) => ({
+      key: String(r.saleInvoiceLineId),
+      docNumber: r.docNumber,
+      postingDate: toDateOnly(r.postingDate),
+      itemId: r.itemId,
+      itemName: r.itemName,
+      batchNo: r.batchNo,
+      qty: r.qty,
+      dispensingNote: r.dispensingNote,
+      dispensedByUserId: r.dispensedByUserId,
+      dispensedByName: r.dispensedByName,
+    }));
   }
 }
 
