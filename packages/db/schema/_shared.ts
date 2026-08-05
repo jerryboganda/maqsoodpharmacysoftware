@@ -57,6 +57,19 @@ export function fkBigIntNotNull(columnName: string) {
 // converts through the session time zone, which is precisely what §5.6 says to avoid for business
 // data ("store DATETIME in Pakistan local time"). Add `ON UPDATE CURRENT_TIMESTAMP(3)` to this
 // column by hand in the generated migration, per the documented generate -> review -> commit flow.
+//
+// KNOWN INTERACTION (audited 2026-08-05): this pack's own `createdAt`/`updatedAt` DEFAULT --
+// like every other bare `DEFAULT CURRENT_TIMESTAMP(3)` `datetime` column in this schema -- is
+// stamped in real Asia/Karachi wall-clock time (§5.6's own binding, "store DATETIME in Pakistan
+// local time"), but drizzle-orm's `datetime()` column mapper always treats an app-set `new Date()`
+// as UTC on write AND read, never honouring that intent for values application code supplies. The
+// two disagree by the +05:00 offset. Comparing a DEFAULT-stamped column (`createdAt`/`updatedAt`
+// from this pack, never explicitly overridden by any current call site) against an app-set
+// timestamp WOULD be wrong -- found and fixed live once already (cashier-shift.service.ts's
+// `openedAt`, switched to an explicit `new Date()`). Full writeup + the rest of this audit's
+// findings: packages/db/client.ts's own header comment. If you're about to write a query that
+// ranges/compares `createdAt`/`updatedAt` against `new Date()` or another app-set timestamp,
+// set the column explicitly at insert time instead of leaning on this pack's own default.
 export function auditColumns() {
   return {
     createdAt: datetime("created_at", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
