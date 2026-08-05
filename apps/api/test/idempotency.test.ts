@@ -13,8 +13,9 @@
 // (test/support/test-app.ts), same convention every other file in this suite uses.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { appUsers, cashBankAccounts, expenseCategories, expenses, getDb, glAccounts } from "@pharmacy/db";
+import { appUsers, cashBankAccounts, expenseCategories, expenses, getDb, glAccounts, idempotencyKeys } from "@pharmacy/db";
 
+import { MySqlIdempotencyStore } from "../src/common/idempotency/idempotency-store.js";
 import { createTestUser, loginAsOwner, type LoggedInUser } from "./support/auth.js";
 import { createTestApp, newIdempotencyKey, request, type TestApp } from "./support/test-app.js";
 
@@ -251,5 +252,54 @@ describe("Idempotency-Key mechanism (cross-cutting)", () => {
     expect(postRes.status, JSON.stringify(postRes.json)).toBe(200);
     expect(postRes.json.expense.status).toBe("posted");
     expect(typeof postRes.json.journalEntryId).toBe("number");
+  });
+
+  it("5. pruneExpired() deletes an expired TERMINAL-state row, but never touches an expired in_progress row (Wave 9 -- the safe half of the §7.5 step 4/5 sweeper gap)", async () => {
+    const db = getDb();
+    const longAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000); // 8 days ago -- past the 7-day expiry
+    const expiredPast = new Date(Date.now() - 24 * 60 * 60 * 1000); // expiresAt itself, also in the past
+
+    const succeededKey = `idem-test-prune-succeeded-${Date.now().toString(36)}`;
+    const inProgressKey = `idem-test-prune-inprogress-${Date.now().toString(36)}`;
+    const endpoint = "POST /idem-test-prune-fixture"; // never a real route -- isolates this test from real traffic
+
+    await db.insert(idempotencyKeys).values([
+      {
+        idemKey: succeededKey,
+        endpoint,
+        requestHash: "0".repeat(64),
+        status: "succeeded",
+        responseStatus: 201,
+        responseBody: { fixture: true },
+        createdAt: longAgo,
+        completedAt: longAgo,
+        expiresAt: expiredPast,
+      },
+      {
+        idemKey: inProgressKey,
+        endpoint,
+        requestHash: "0".repeat(64),
+        status: "in_progress",
+        createdAt: longAgo,
+        expiresAt: expiredPast, // also expired, but status is in_progress -- must survive
+      },
+    ]);
+
+    const store = new MySqlIdempotencyStore();
+    const deletedCount = await store.pruneExpired();
+    expect(deletedCount).toBeGreaterThanOrEqual(1); // at least this test's own row (a shared dev DB may have other real-traffic rows to prune too)
+
+    const remaining = await db
+      .select({ idemKey: idempotencyKeys.idemKey, status: idempotencyKeys.status })
+      .from(idempotencyKeys)
+      .where(and(eq(idempotencyKeys.endpoint, endpoint)));
+
+    expect(remaining.find((r) => r.idemKey === succeededKey)).toBeUndefined(); // pruned
+    const survivor = remaining.find((r) => r.idemKey === inProgressKey);
+    expect(survivor).toBeDefined(); // NEVER pruned, regardless of age -- the real safety guarantee
+    expect(survivor?.status).toBe("in_progress");
+
+    // Clean up the survivor directly -- pruneExpired() will never do it, by design.
+    await db.delete(idempotencyKeys).where(and(eq(idempotencyKeys.idemKey, inProgressKey), eq(idempotencyKeys.endpoint, endpoint)));
   });
 });

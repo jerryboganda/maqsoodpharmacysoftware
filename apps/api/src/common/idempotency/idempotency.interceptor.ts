@@ -5,7 +5,12 @@
 //      allow a fresh attempt.
 //   2-3. Run the handler; record the outcome (TODO(real impl): on the SAME connection inside
 //        the business commit -- see idempotency-store.ts).
-//   4-5. Sweeper/expiry pruning: TODO(real impl), a `platform` module job.
+//   4. Sweeper for rows stuck `in_progress`: deliberately NOT implemented -- see
+//      idempotency-store.ts's header comment for why a naive reset-and-retry is a real
+//      double-execution risk, not just an oversight.
+//   5. Expiry pruning (Wave 9): `MySqlIdempotencyStore.pruneExpired()` -- terminal-state rows
+//      only, fired as a bounded, best-effort side effect of a fresh `begin()` insert (no cron
+//      exists anywhere in this codebase).
 import { createHash } from "node:crypto";
 
 import type { CallHandler, ExecutionContext, NestInterceptor } from "@nestjs/common";

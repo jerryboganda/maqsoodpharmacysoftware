@@ -16,12 +16,38 @@
 //     the caller's transaction (`Tx`) through `IdempotencyInterceptor` into these calls, which is
 //     an interceptor/tx-context change outside this task's scope (the interceptor's call sites --
 //     `void this.store.complete(...)` / `void this.store.fail(...)` in the `tap` callbacks --
-//     are fire-and-forget by construction today).
-//   - the `platform` sweeper (rows stuck `in_progress` > 5 minutes, §7.5 step 4) and the nightly
-//     `expires_at` pruning job (step 5) are not implemented -- `ix_idem_expiry` exists so that job
-//     has an index to scan when it is built.
-import { Injectable } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
+//     are fire-and-forget by construction today). This is a genuinely large change (every
+//     mutating service opens its OWN `db.transaction(...)`; making the interceptor's transaction
+//     the one every downstream service call reuses touches all of them).
+//   - the `platform` sweeper for rows STUCK `in_progress` (§7.5 step 4) is DELIBERATELY still not
+//     implemented, and this is a considered decision, not an oversight: a stuck `in_progress` row
+//     means the real outcome (did the business action actually commit before the process
+//     crashed/restarted?) is UNKNOWN. Silently resetting it to "in_progress" and letting a retry
+//     re-run the handler risks executing a financial action TWICE if the original attempt had, in
+//     fact, already committed before the crash -- worse than the current behaviour (permanently
+//     stuck, requiring a human to check the real outcome and intervene). Correctly solving this
+//     needs the SAME transaction-threading fix as the bullet above (only the interceptor, holding
+//     the actual commit's own connection, can know for certain whether the business action
+//     landed) -- tracked together, both explicitly deferred to their own dedicated wave rather
+//     than papered over with a reset-and-hope fix here.
+//
+// Wave 9 fix (the part of this gap that IS safe to do without the transaction redesign):
+// `pruneExpired()` below, satisfying §7.5 step 5's actual intent -- bounding `idempotency_key`
+// table growth -- WITHOUT touching any request-blocking behaviour. It only ever deletes rows in a
+// TERMINAL state (`succeeded`/`failed`) whose `expiresAt` has passed; a `succeeded` row's own
+// `begin()` branch already replays it verbatim for as long as the row exists (no expiry check
+// added there -- an expired-but-still-present `succeeded` row silently starting to "reset and
+// re-run" on the next matching retry would be exactly the same double-execution risk the
+// `in_progress` sweeper above is deliberately NOT doing), so deleting only after the row has
+// genuinely aged out is safe: if a client somehow retries with that exact (already vanishingly
+// unlikely to repeat) key+body after the row is gone, `begin()`'s INSERT just succeeds fresh, no
+// different from a genuinely new action. `ix_idem_expiry` already exists for exactly this scan.
+// Called as a small, bounded (`LIMIT`), fire-and-forget side effect of a normal fresh `begin()`
+// insert -- no cron needed, matching notifications/application/notification.service.ts's own
+// "materialize on read" convention (there is no background job scheduler anywhere in this
+// codebase, confirmed before writing that file).
+import { Injectable, Logger } from "@nestjs/common";
+import { and, eq, lt, or } from "drizzle-orm";
 import { getDb, idempotencyKeys } from "@pharmacy/db";
 
 export type IdempotencyStatus = "in_progress" | "succeeded" | "failed";
@@ -49,6 +75,10 @@ export abstract class IdempotencyStore {
 }
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // §7.5 "expires_at ... created_at + 7 days"
+/** Deliberately small -- this runs as a fire-and-forget side effect of every fresh idempotency-key
+ *  insert, not a dedicated batch job; bounding it keeps that side effect cheap regardless of how
+ *  large the backlog of prunable rows ever gets. */
+const PRUNE_BATCH_LIMIT = 200;
 
 /**
  * True when `error` is a MySQL duplicate-key error (ER_DUP_ENTRY / errno 1062) raised by the
@@ -66,6 +96,8 @@ function isDuplicateKeyError(error: unknown): boolean {
 /** Durable, default `IdempotencyStore` (§7.5). See the file header for the algorithm mapping. */
 @Injectable()
 export class MySqlIdempotencyStore extends IdempotencyStore {
+  private readonly logger = new Logger(MySqlIdempotencyStore.name);
+
   async begin(key: string, endpoint: string, requestHash: string): Promise<BeginOutcome> {
     const db = getDb();
     const now = new Date();
@@ -81,6 +113,12 @@ export class MySqlIdempotencyStore extends IdempotencyStore {
         createdAt: now,
         expiresAt,
       });
+      // Wave 9: bounded, fire-and-forget prune of unrelated expired TERMINAL-state rows -- see
+      // this file's header comment for why only terminal rows are ever eligible, and why this is
+      // the safe half of the sweeper gap. Never awaited: pruning must never add latency to the
+      // request that happened to trigger it, and a failed prune attempt is harmless (the next
+      // fresh `begin()` anywhere just tries again).
+      void this.pruneExpired().catch((error: unknown) => this.logger.warn(`pruneExpired failed (non-fatal): ${String(error)}`));
       return { outcome: "started" };
     } catch (error) {
       if (!isDuplicateKeyError(error)) throw error;
@@ -99,11 +137,16 @@ export class MySqlIdempotencyStore extends IdempotencyStore {
 
     // §7.5 step 1, "on duplicate key":
     if (existing.requestHash !== requestHash) return { outcome: "hash_mismatch" };
+    // `in_progress` always blocks, regardless of age -- deliberately unchanged from before this
+    // wave; see the file header for exactly why a stale-row reset is NOT done here.
     if (existing.status === "in_progress") return { outcome: "in_progress" };
     if (existing.status === "succeeded") {
       return { outcome: "replay", status: existing.responseStatus ?? 200, body: existing.responseBody };
     }
-    // status === "failed" -> allow a fresh attempt (reset to in_progress).
+    // status === "failed" -> allow a fresh attempt (reset to in_progress). Safe: "failed" means
+    // the original handler threw, and every mutating service wraps its work in
+    // `db.transaction(...)`, so a thrown error already rolled back whatever it attempted --
+    // nothing was actually persisted, so re-running is not a double-execution risk.
     await db
       .update(idempotencyKeys)
       .set({ status: "in_progress", responseStatus: null, responseBody: null, completedAt: null })
@@ -126,6 +169,31 @@ export class MySqlIdempotencyStore extends IdempotencyStore {
       .update(idempotencyKeys)
       .set({ status: "failed", completedAt: new Date() })
       .where(and(eq(idempotencyKeys.idemKey, key), eq(idempotencyKeys.endpoint, endpoint)));
+  }
+
+  /** Deletes up to `PRUNE_BATCH_LIMIT` rows that are BOTH in a terminal state (`succeeded` or
+   *  `failed` -- never `in_progress`, see this file's header comment) AND past their own
+   *  `expiresAt`. Returns the number of rows actually deleted, for tests/observability -- callers
+   *  on the hot path (see `begin()` above) fire this without awaiting the result. */
+  async pruneExpired(): Promise<number> {
+    const db = getDb();
+    const now = new Date();
+    const candidates = await db
+      .select({ idemKey: idempotencyKeys.idemKey, endpoint: idempotencyKeys.endpoint })
+      .from(idempotencyKeys)
+      .where(and(or(eq(idempotencyKeys.status, "succeeded"), eq(idempotencyKeys.status, "failed")), lt(idempotencyKeys.expiresAt, now)))
+      .limit(PRUNE_BATCH_LIMIT);
+    if (candidates.length === 0) return 0;
+
+    // No composite-key `IN` helper in this Drizzle version -- delete one at a time inside a single
+    // batch of statements rather than building a raw SQL tuple-IN (same tradeoff this codebase's
+    // other insert-then-reselect patterns already accept: correctness and readability over one
+    // fewer round trip, for a background-hygiene path that is never on a user-facing request's
+    // critical path).
+    for (const row of candidates) {
+      await db.delete(idempotencyKeys).where(and(eq(idempotencyKeys.idemKey, row.idemKey), eq(idempotencyKeys.endpoint, row.endpoint)));
+    }
+    return candidates.length;
   }
 }
 
